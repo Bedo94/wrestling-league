@@ -1,0 +1,5 @@
+SEX_OPTIONS = ["Maschio", "Femmina"]
+
+STYLE_OPTIONS = ["Stile libero", "Greco romana"]
+
+WIN_TYPE_OPTIONS = ["Decisione", "Superiorità tecnica", "Schienamento", "Forfait", "Altro"]
