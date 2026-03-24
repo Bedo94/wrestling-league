@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import select
@@ -11,7 +12,7 @@ def create_athlete(
     last_name: Optional[str],
     nickname: Optional[str],
     team: Optional[str],
-    birth_year: int,
+    birth_date: date,
     sex: str,
     style: str,
     level: int,
@@ -25,7 +26,7 @@ def create_athlete(
             last_name=(last_name or "").strip() or None,
             nickname=(nickname or "").strip() or None,
             team=(team or "").strip() or None,
-            birth_year=birth_year,
+            birth_date=birth_date,
             sex=sex,
             style=style,
             level=level,

@@ -32,44 +32,47 @@ def get_weight_factor(own_weight: float, opponent_weight: float) -> float:
     return factor
 
 
-def get_age_at_event(birth_year: int, event_date: date) -> int:
-    return event_date.year - birth_year
+def get_age_at_event(birth_date: date, event_date: date) -> int:
+    age = event_date.year - birth_date.year
+    if (event_date.month, event_date.day) < (birth_date.month, birth_date.day):
+        age -= 1
+    return age
 
 
-def is_minor(birth_year: int, event_date: date) -> bool:
-    return get_age_at_event(birth_year, event_date) < MINOR_AGE_THRESHOLD
+def is_minor(birth_date: date, event_date: date) -> bool:
+    return get_age_at_event(birth_date, event_date) < MINOR_AGE_THRESHOLD
 
 
-def is_senior_male(sex: str, birth_year: int, event_date: date) -> bool:
-    return sex == "Maschio" and not is_minor(birth_year, event_date)
+def is_senior_male(sex: str, birth_date: date, event_date: date) -> bool:
+    return sex == "Maschio" and not is_minor(birth_date, event_date)
 
 
 def gets_special_bonus(
     athlete_sex: str,
-    athlete_birth_year: int,
+    athlete_birth_date: date,
     opponent_sex: str,
-    opponent_birth_year: int,
+    opponent_birth_date: date,
     event_date: date,
 ) -> bool:
     athlete_is_female = athlete_sex == "Femmina"
-    athlete_is_minor = is_minor(athlete_birth_year, event_date)
-    opponent_is_senior_male = is_senior_male(opponent_sex, opponent_birth_year, event_date)
+    athlete_is_minor = is_minor(athlete_birth_date, event_date)
+    opponent_is_senior_male = is_senior_male(opponent_sex, opponent_birth_date, event_date)
 
     return opponent_is_senior_male and (athlete_is_female or athlete_is_minor)
 
 
 def get_special_factor(
     athlete_sex: str,
-    athlete_birth_year: int,
+    athlete_birth_date: date,
     opponent_sex: str,
-    opponent_birth_year: int,
+    opponent_birth_date: date,
     event_date: date,
 ) -> float:
     if gets_special_bonus(
         athlete_sex=athlete_sex,
-        athlete_birth_year=athlete_birth_year,
+        athlete_birth_date=athlete_birth_date,
         opponent_sex=opponent_sex,
-        opponent_birth_year=opponent_birth_year,
+        opponent_birth_date=opponent_birth_date,
         event_date=event_date,
     ):
         return SPECIAL_BONUS_FACTOR
@@ -95,8 +98,8 @@ def calculate_match_points(
     raw_score_b: float,
     athlete_a_sex: str,
     athlete_b_sex: str,
-    athlete_a_birth_year: int,
-    athlete_b_birth_year: int,
+    athlete_a_birth_date: date,
+    athlete_b_birth_date: date,
     event_date: date,
 ) -> dict:
     validate_weight_difference(weight_a, weight_b)
@@ -109,16 +112,16 @@ def calculate_match_points(
 
     special_factor_a = get_special_factor(
         athlete_sex=athlete_a_sex,
-        athlete_birth_year=athlete_a_birth_year,
+        athlete_birth_date=athlete_a_birth_date,
         opponent_sex=athlete_b_sex,
-        opponent_birth_year=athlete_b_birth_year,
+        opponent_birth_date=athlete_b_birth_date,
         event_date=event_date,
     )
     special_factor_b = get_special_factor(
         athlete_sex=athlete_b_sex,
-        athlete_birth_year=athlete_b_birth_year,
+        athlete_birth_date=athlete_b_birth_date,
         opponent_sex=athlete_a_sex,
-        opponent_birth_year=athlete_a_birth_year,
+        opponent_birth_date=athlete_a_birth_date,
         event_date=event_date,
     )
 

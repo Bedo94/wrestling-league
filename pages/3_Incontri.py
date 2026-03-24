@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+from src.ratings import recompute_ratings
 
 from src.athletes import list_athletes
 from src.events import list_events
@@ -102,69 +103,71 @@ with st.form("match_form", clear_on_submit=True):
 
     submitted = st.form_submit_button("Salva incontro")
 
-    if submitted:
-        if athlete_a.id == athlete_b.id:
-            st.error("Atleta A e Atleta B devono essere diversi.")
-        elif athlete_a.style != athlete_b.style:
-            st.error("Gli atleti devono avere lo stesso stile di lotta.")
-        else:
-            winner_id = athlete_a.id if winner_choice == "Atleta A" else athlete_b.id
+if submitted:
+    if athlete_a.id == athlete_b.id:
+        st.error("Atleta A e Atleta B devono essere diversi.")
+    elif athlete_a.style != athlete_b.style:
+        st.error("Gli atleti devono avere lo stesso stile di lotta.")
+    else:
+        winner_id = athlete_a.id if winner_choice == "Atleta A" else athlete_b.id
 
-            try:
-                validate_weight_difference(float(weight_a), float(weight_b))
+        try:
+            validate_weight_difference(float(weight_a), float(weight_b))
 
-                preview = calculate_match_points(
-                    athlete_a_id=athlete_a.id,
-                    athlete_b_id=athlete_b.id,
-                    winner_id=winner_id,
-                    weight_a=float(weight_a),
-                    weight_b=float(weight_b),
-                    raw_score_a=float(raw_score_a),
-                    raw_score_b=float(raw_score_b),
-                    athlete_a_sex=athlete_a.sex,
-                    athlete_b_sex=athlete_b.sex,
-                    athlete_a_birth_year=int(athlete_a.birth_year),
-                    athlete_b_birth_year=int(athlete_b.birth_year),
-                    event_date=selected_event.event_date,
-                )
+            preview = calculate_match_points(
+                athlete_a_id=athlete_a.id,
+                athlete_b_id=athlete_b.id,
+                winner_id=winner_id,
+                weight_a=float(weight_a),
+                weight_b=float(weight_b),
+                raw_score_a=float(raw_score_a),
+                raw_score_b=float(raw_score_b),
+                athlete_a_sex=athlete_a.sex,
+                athlete_b_sex=athlete_b.sex,
+                athlete_a_birth_date=athlete_a.birth_date,
+                athlete_b_birth_date=athlete_b.birth_date,
+                event_date=selected_event.event_date,
+            )
 
-                match = create_match(
-                    event_id=selected_event.id,
-                    athlete_a_id=athlete_a.id,
-                    athlete_b_id=athlete_b.id,
-                    style=athlete_a.style,
-                    weight_a=float(weight_a),
-                    weight_b=float(weight_b),
-                    level_a=int(athlete_a.level),
-                    level_b=int(athlete_b.level),
-                    raw_score_a=float(raw_score_a),
-                    raw_score_b=float(raw_score_b),
-                    athlete_a_sex=athlete_a.sex,
-                    athlete_b_sex=athlete_b.sex,
-                    athlete_a_birth_year=int(athlete_a.birth_year),
-                    athlete_b_birth_year=int(athlete_b.birth_year),
-                    event_date=selected_event.event_date,
-                    winner_id=winner_id,
-                    win_type=win_type,
-                    notes=notes,
-                )
+            match = create_match(
+                event_id=selected_event.id,
+                athlete_a_id=athlete_a.id,
+                athlete_b_id=athlete_b.id,
+                style=athlete_a.style,
+                weight_a=float(weight_a),
+                weight_b=float(weight_b),
+                level_a=int(athlete_a.level),
+                level_b=int(athlete_b.level),
+                raw_score_a=float(raw_score_a),
+                raw_score_b=float(raw_score_b),
+                athlete_a_sex=athlete_a.sex,
+                athlete_b_sex=athlete_b.sex,
+                athlete_a_birth_date=athlete_a.birth_date,
+                athlete_b_birth_date=athlete_b.birth_date,
+                event_date=selected_event.event_date,
+                winner_id=winner_id,
+                win_type=win_type,
+                notes=notes,
+            )
 
-                st.success(
-                    f"Incontro salvato. "
-                    f"Punti classifica A = {match.points_a:.2f}, "
-                    f"Punti classifica B = {match.points_b:.2f}"
-                )
+            recompute_ratings()
 
-                st.info(
-                    f"Dettaglio calcolo — "
-                    f"A: base={preview['result_base_a']}, bonus prestazione={preview['performance_bonus_a']}, "
-                    f"fattore peso={preview['weight_factor_a']}, fattore speciale={preview['special_factor_a']}. "
-                    f"B: base={preview['result_base_b']}, bonus prestazione={preview['performance_bonus_b']}, "
-                    f"fattore peso={preview['weight_factor_b']}, fattore speciale={preview['special_factor_b']}."
-                )
-            except ValueError as exc:
-                st.error(str(exc))
+            st.success(
+                f"Incontro salvato. "
+                f"Punti classifica A = {match.points_a:.2f}, "
+                f"Punti classifica B = {match.points_b:.2f}"
+            )
 
+            st.info(
+                f"Dettaglio calcolo — "
+                f"A: base={preview['result_base_a']}, bonus prestazione={preview['performance_bonus_a']}, "
+                f"fattore peso={preview['weight_factor_a']}, fattore speciale={preview['special_factor_a']}. "
+                f"B: base={preview['result_base_b']}, bonus prestazione={preview['performance_bonus_b']}, "
+                f"fattore peso={preview['weight_factor_b']}, fattore speciale={preview['special_factor_b']}."
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            
 st.divider()
 
 st.subheader("Lista incontri")

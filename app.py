@@ -3,6 +3,9 @@ from pathlib import Path
 import streamlit as st
 
 from src.database import DB_PATH
+from src.init_db import init_db
+
+init_db()
 
 st.set_page_config(
     page_title="Wrestling League",
@@ -34,4 +37,4 @@ else:
     st.warning("Database non ancora creato.")
 
 st.markdown("## Step attuale")
-st.info("Step 1: fondamenta dell'applicazione")
+st.info("Step attuale: scoring e preparazione classifiche")

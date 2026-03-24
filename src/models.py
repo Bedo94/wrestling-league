@@ -16,7 +16,7 @@ class Athlete(Base):
     nickname: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     team: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
-    birth_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    birth_date: Mapped[date] = mapped_column(Date, nullable=False)
     sex: Mapped[str] = mapped_column(String(20), nullable=False)
     style: Mapped[str] = mapped_column(String(30), nullable=False)
 

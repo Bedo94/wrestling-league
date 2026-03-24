@@ -22,8 +22,8 @@ def create_match(
     raw_score_b: float,
     athlete_a_sex: str,
     athlete_b_sex: str,
-    athlete_a_birth_year: int,
-    athlete_b_birth_year: int,
+    athlete_a_birth_date: date,
+    athlete_b_birth_date: date,
     event_date: date,
     winner_id: int,
     win_type: str,
@@ -51,8 +51,8 @@ def create_match(
         raw_score_b=raw_score_b,
         athlete_a_sex=athlete_a_sex,
         athlete_b_sex=athlete_b_sex,
-        athlete_a_birth_year=athlete_a_birth_year,
-        athlete_b_birth_year=athlete_b_birth_year,
+        athlete_a_birth_date=athlete_a_birth_date,
+        athlete_b_birth_date=athlete_b_birth_date,
         event_date=event_date,
     )
 

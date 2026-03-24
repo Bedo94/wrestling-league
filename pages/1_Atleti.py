@@ -1,3 +1,5 @@
+from datetime import date
+
 import pandas as pd
 import streamlit as st
 
@@ -27,12 +29,12 @@ with st.form("athlete_form", clear_on_submit=True):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        birth_year = st.number_input(
-            "Anno di nascita *",
-            min_value=1950,
-            max_value=2030,
-            value=2000,
-            step=1,
+        birth_date = st.date_input(
+            "Data di nascita *",
+            value=date(2000, 1, 1),
+            min_value=date(1950, 1, 1),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
         )
 
     with col2:
@@ -68,7 +70,7 @@ with st.form("athlete_form", clear_on_submit=True):
                 last_name=last_name,
                 nickname=nickname,
                 team=team,
-                birth_year=int(birth_year),
+                birth_date=birth_date,
                 sex=sex,
                 style=style,
                 level=level,
@@ -99,7 +101,7 @@ else:
                 "Cognome": a.last_name,
                 "Nickname": a.nickname,
                 "Team": a.team,
-                "Anno nascita": a.birth_year,
+                "Data nascita": a.birth_date.strftime("%d/%m/%Y"),
                 "Sesso": a.sex,
                 "Stile": a.style,
                 "Livello": get_level_label(a.level),
