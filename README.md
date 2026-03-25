@@ -67,3 +67,15 @@ L'app inizializza automaticamente il database all'avvio se il file SQLite non es
 
 ## Nota sulla documentazione
 La documentazione descrive sia le regole attualmente implementate sia le parti ancora in valutazione.
+
+## Uso con ChatGPT
+
+Questo progetto può essere sviluppato usando ChatGPT come assistente.
+
+Documentazione:
+- docs/chatgpt/CHATGPT_WORKFLOW.md
+
+Flusso:
+- codice su GitHub
+- ChatGPT usato come assistente
+- modifiche sempre applicate localmente
