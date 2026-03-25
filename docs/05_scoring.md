@@ -12,7 +12,7 @@ Per ciascun atleta viene calcolato un punteggio finale sommando una parte
 additiva (base risultato + bonus prestazione) e moltiplicando per due
 moltiplicatori (fattore peso e fattore speciale):
 
-punti_finali = (base_risultato + bonus_prestazione) × fattore_peso × fattore_speciale
+$punti\_finali = (base\_risultato + bonus\_prestazione) × fattore\_peso × fattore\_speciale$
 
 
 Questa formula garantisce che la vittoria e la prestazione siano la base,
