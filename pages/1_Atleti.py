@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from src.athletes import create_athlete, list_athletes
+from src.athletes import create_athlete, list_athletes, list_teams
 from src.levels import get_level_label, get_level_labels, get_level_from_label
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
 
@@ -19,13 +19,19 @@ ai risultati ottenuti. Per ora non viene ancora calcolato automaticamente.
 )
 
 st.subheader("Aggiungi atleta")
+team_options = list_teams()
 
 with st.form("athlete_form", clear_on_submit=True):
     first_name = st.text_input("Nome *")
     last_name = st.text_input("Cognome")
     nickname = st.text_input("Nickname")
-    team = st.text_input("Team / Corso / Università")
-
+    team = st.selectbox(
+        "Team / Corso / Università",
+        options=team_options,
+        index=None,
+        placeholder="Seleziona o scrivi un team",
+        accept_new_options=True,
+    )
     col1, col2, col3 = st.columns(3)
 
     with col1:

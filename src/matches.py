@@ -45,6 +45,7 @@ def create_match(
         athlete_a_id=athlete_a_id,
         athlete_b_id=athlete_b_id,
         winner_id=winner_id,
+        win_type=win_type,
         weight_a=weight_a,
         weight_b=weight_b,
         raw_score_a=raw_score_a,

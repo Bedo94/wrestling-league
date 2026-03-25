@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, distinct
 
 from src.database import get_session
 from src.models import Athlete
@@ -49,5 +49,18 @@ def list_athletes(include_inactive: bool = True) -> list[Athlete]:
         if not include_inactive:
             stmt = stmt.where(Athlete.active.is_(True))
         return list(session.scalars(stmt).all())
+    finally:
+        session.close()
+
+def list_teams() -> list[str]:
+    session = get_session()
+    try:
+        stmt = (
+            select(distinct(Athlete.team))
+            .where(Athlete.team.is_not(None))
+            .order_by(Athlete.team.asc())
+        )
+        results = session.execute(stmt).scalars().all()
+        return [team for team in results if team and team.strip()]
     finally:
         session.close()

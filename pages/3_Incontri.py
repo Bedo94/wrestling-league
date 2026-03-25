@@ -118,6 +118,7 @@ if submitted:
                 athlete_a_id=athlete_a.id,
                 athlete_b_id=athlete_b.id,
                 winner_id=winner_id,
+                win_type=win_type,
                 weight_a=float(weight_a),
                 weight_b=float(weight_b),
                 raw_score_a=float(raw_score_a),

@@ -1,28 +1,20 @@
 from datetime import date
 
-MAX_WEIGHT_DIFF_KG = 10.0
-WEIGHT_BONUS_PER_KG = 0.05
-
-WINNER_BASE_POINTS = 2.0
-LOSER_BASE_POINTS = 1.0
-
-PERFORMANCE_BONUS_MAX = 0.5
-
-MINOR_AGE_THRESHOLD = 18
-SPECIAL_BONUS_FACTOR = 1.30
+from src.settings import SCORING_SETTINGS
 
 
 def validate_weight_difference(weight_a: float, weight_b: float) -> None:
     diff = abs(weight_a - weight_b)
-    if diff > MAX_WEIGHT_DIFF_KG:
+    if diff > SCORING_SETTINGS["max_weight_diff_kg"]:
         raise ValueError(
-            f"La differenza di peso è {diff:.1f} kg: supera il limite di {MAX_WEIGHT_DIFF_KG:.0f} kg."
+            f"La differenza di peso è {diff:.1f} kg: supera il limite di "
+            f"{SCORING_SETTINGS['max_weight_diff_kg']:.0f} kg."
         )
 
 
 def get_weight_factor(own_weight: float, opponent_weight: float) -> float:
     diff = opponent_weight - own_weight
-    factor = 1 + (diff * WEIGHT_BONUS_PER_KG)
+    factor = 1 + (diff * SCORING_SETTINGS["weight_bonus_per_kg"])
 
     if factor < 0.5:
         factor = 0.5
@@ -40,7 +32,7 @@ def get_age_at_event(birth_date: date, event_date: date) -> int:
 
 
 def is_minor(birth_date: date, event_date: date) -> bool:
-    return get_age_at_event(birth_date, event_date) < MINOR_AGE_THRESHOLD
+    return get_age_at_event(birth_date, event_date) < SCORING_SETTINGS["minor_age_threshold"]
 
 
 def is_senior_male(sex: str, birth_date: date, event_date: date) -> bool:
@@ -75,7 +67,7 @@ def get_special_factor(
         opponent_birth_date=opponent_birth_date,
         event_date=event_date,
     ):
-        return SPECIAL_BONUS_FACTOR
+        return SCORING_SETTINGS["special_bonus_factor"]
     return 1.0
 
 
@@ -85,13 +77,36 @@ def get_performance_bonus(raw_score: float, opponent_raw_score: float) -> float:
         return 0.0
 
     share = raw_score / total_raw
-    return share * PERFORMANCE_BONUS_MAX
+    return share * SCORING_SETTINGS["performance_bonus_max"]
+
+
+def get_result_base_points(win_type: str, is_winner: bool) -> float:
+    if win_type == "Ritiro":
+        return (
+            SCORING_SETTINGS["retirement_winner_base_points"]
+            if is_winner
+            else SCORING_SETTINGS["retirement_loser_base_points"]
+        )
+
+    if win_type == "Forfait":
+        return (
+            SCORING_SETTINGS["forfeit_winner_base_points"]
+            if is_winner
+            else SCORING_SETTINGS["forfeit_loser_base_points"]
+        )
+
+    return (
+        SCORING_SETTINGS["winner_base_points"]
+        if is_winner
+        else SCORING_SETTINGS["loser_base_points"]
+    )
 
 
 def calculate_match_points(
     athlete_a_id: int,
     athlete_b_id: int,
     winner_id: int,
+    win_type: str,
     weight_a: float,
     weight_b: float,
     raw_score_a: float,
@@ -125,11 +140,15 @@ def calculate_match_points(
         event_date=event_date,
     )
 
-    result_base_a = WINNER_BASE_POINTS if winner_id == athlete_a_id else LOSER_BASE_POINTS
-    result_base_b = WINNER_BASE_POINTS if winner_id == athlete_b_id else LOSER_BASE_POINTS
+    result_base_a = get_result_base_points(win_type, winner_id == athlete_a_id)
+    result_base_b = get_result_base_points(win_type, winner_id == athlete_b_id)
 
-    performance_bonus_a = get_performance_bonus(raw_score_a, raw_score_b)
-    performance_bonus_b = get_performance_bonus(raw_score_b, raw_score_a)
+    if win_type == "Forfait":
+        performance_bonus_a = 0.0
+        performance_bonus_b = 0.0
+    else:
+        performance_bonus_a = get_performance_bonus(raw_score_a, raw_score_b)
+        performance_bonus_b = get_performance_bonus(raw_score_b, raw_score_a)
 
     pre_multiplier_a = result_base_a + performance_bonus_a
     pre_multiplier_b = result_base_b + performance_bonus_b

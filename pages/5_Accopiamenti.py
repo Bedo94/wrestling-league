@@ -6,26 +6,15 @@ import streamlit as st
 from src.athletes import list_athletes
 from src.events import list_events
 from src.levels import get_level_label
-from src.pairing import calculate_age, generate_candidate_pairs, select_greedy_pairings
 from src.matches import list_matches
-
-st.title("Accoppiamenti / Matchmaking")
-
-st.markdown(
-    """
-Questa pagina suggerisce matchup bilanciati in base a:
-
-- stile
-- peso
-- level
-- rating
-- età
-- precedenti incontri
-
-**Nota:** questa versione propone accoppiamenti ma non crea ancora incontri nel database.
-"""
+from src.pairing import (
+    calculate_age,
+    generate_candidate_pairs,
+    select_greedy_pairings,
 )
 
+st.title("Accoppiamenti / Matchmaking")
+st.caption("Più basso è l’indice mismatch, più l’accoppiamento è equilibrato.")
 
 def athlete_label(athlete, reference_date: date) -> str:
     full_name = f"{athlete.first_name} {athlete.last_name or ''}".strip()
@@ -60,6 +49,14 @@ selected_event = st.selectbox(
 )
 
 reference_date = selected_event.event_date
+event_dates = {event.id: event.event_date for event in events}
+
+relevant_matches = [
+    match
+    for match in all_matches
+    if event_dates.get(match.event_id) is not None
+    and event_dates[match.event_id] <= reference_date
+]
 
 styles = sorted({athlete.style for athlete in all_athletes})
 selected_style = st.selectbox("Stile", options=styles)
@@ -73,7 +70,14 @@ if len(style_athletes) < 2:
 sex_options = sorted({athlete.sex for athlete in style_athletes})
 selected_sexes = st.multiselect("Sesso", options=sex_options, default=sex_options)
 
-filtered_pool = [athlete for athlete in style_athletes if athlete.sex in selected_sexes]
+level_options = sorted({get_level_label(athlete.level) for athlete in style_athletes})
+selected_levels = st.multiselect("Level", options=level_options, default=level_options)
+
+filtered_pool = [
+    athlete
+    for athlete in style_athletes
+    if athlete.sex in selected_sexes and get_level_label(athlete.level) in selected_levels
+]
 
 if len(filtered_pool) < 2:
     st.warning("I filtri correnti lasciano meno di due atleti.")
@@ -100,21 +104,23 @@ with col1:
             step=1,
         )
 
-    max_pair_weight_diff = st.number_input(
-        "Differenza peso massima per coppia (kg)",
-        min_value=0.0,
-        max_value=50.0,
-        value=10.0,
-        step=0.5,
-    )
+    level_diff_labels = {
+        "Solo stesso livello": 0,
+        "Max 1 fascia di differenza": 1,
+        "Max 2 fasce di differenza": 2,
+        "Max 3 fasce di differenza": 3,
+    }
 
-    max_pair_level_diff = st.number_input(
+    selected_level_diff_label = st.selectbox(
         "Differenza level massima per coppia",
-        min_value=0,
-        max_value=10,
-        value=2,
-        step=1,
+        options=list(level_diff_labels.keys()),
+        index=2,
+        help=(
+            "Indica quante fasce tecniche possono separare i due atleti. "
+            "Esempio: Base vs Intermedio = 1 fascia di differenza."
+        ),
     )
+    max_pair_level_diff = level_diff_labels[selected_level_diff_label]
 
 with col2:
     if min_weight == max_weight:
@@ -129,6 +135,14 @@ with col2:
             step=0.5,
         )
 
+    max_pair_weight_diff = st.number_input(
+        "Differenza peso massima per coppia (kg)",
+        min_value=0.0,
+        max_value=50.0,
+        value=10.0,
+        step=0.5,
+    )
+
     max_pair_age_diff = st.number_input(
         "Differenza età massima per coppia",
         min_value=0,
@@ -137,9 +151,28 @@ with col2:
         step=1,
     )
 
-    use_rating = st.checkbox("Usa rating nella compatibilità", value=True)
-    avoid_rematches = st.checkbox("Penalizza rematch", value=True)
-    same_sex_only = st.checkbox("Accoppia solo atleti dello stesso sesso", value=False)
+use_rating = st.checkbox(
+    "Usa rating nella compatibilità",
+    value=True,
+    help=(
+        "Se attivo, il sistema considera anche la differenza di rating per raffinare "
+        "gli accoppiamenti."
+    ),
+)
+
+avoid_rematches = st.checkbox(
+    "Penalizza rematch",
+    value=True,
+    help=(
+        "Se attivo, il sistema sfavorisce accoppiamenti tra atleti che si sono già "
+        "affrontati in passato."
+    ),
+)
+
+same_sex_only = st.checkbox(
+    "Accoppia solo atleti dello stesso sesso",
+    value=False,
+)
 
 age_min, age_max = selected_age_range
 weight_min, weight_max = selected_weight_range
@@ -172,7 +205,7 @@ if len(selected_athletes) < 2:
 
 candidates = generate_candidate_pairs(
     athletes=selected_athletes,
-    matches=all_matches,
+    matches=relevant_matches,
     reference_date=reference_date,
     max_weight_diff=float(max_pair_weight_diff),
     max_level_diff=int(max_pair_level_diff),
@@ -189,6 +222,10 @@ if not candidates:
 selected_pairs, leftovers = select_greedy_pairings(candidates, selected_athletes)
 
 st.subheader("Accoppiamenti suggeriti")
+st.caption(
+    "Questa è la selezione finale proposta dal sistema. "
+    "Ogni atleta compare al massimo una volta."
+)
 
 if not selected_pairs:
     st.info("Nessun accoppiamento selezionabile.")
@@ -204,18 +241,21 @@ else:
                 "Atleta B": f"{athlete_b.first_name} {athlete_b.last_name or ''}".strip(),
                 "Stile": pair["style"],
                 "Δ peso": pair["weight_diff"],
-                "Δ level": pair["level_diff"],
+                "Δ level": pair["level_gap_label"],
                 "Δ rating": pair["rating_diff"],
                 "Δ età": pair["age_diff"],
-                "Precedenti": pair["previous_matches"],
-                "Score": pair["score"],
-                "Dettaglio": pair["explanation"],
+                "Storico": pair["previous_matches_label"],
+                "Indice mismatch": pair["mismatch_index"],
             }
         )
 
     st.dataframe(pd.DataFrame(selected_rows), use_container_width=True, hide_index=True)
 
 st.subheader("Tutte le coppie candidate")
+st.caption(
+    "Questa tabella mostra tutte le coppie valide considerate dal sistema "
+    "prima della selezione finale."
+)
 
 candidate_rows = []
 for pair in candidates:
@@ -236,12 +276,16 @@ for pair in candidates:
             "Età A": pair["age_a"],
             "Età B": pair["age_b"],
             "Δ peso": pair["weight_diff"],
-            "Δ level": pair["level_diff"],
+            "Δ level": pair["level_gap_label"],
             "Δ rating": pair["rating_diff"],
             "Δ età": pair["age_diff"],
-            "Precedenti": pair["previous_matches"],
-            "Score": pair["score"],
-            "Dettaglio": pair["explanation"],
+            "Storico": pair["previous_matches_label"],
+            "Comp. peso": pair["weight_component"],
+            "Comp. level": pair["level_component"],
+            "Comp. rating": pair["rating_component"],
+            "Comp. età": pair["age_component"],
+            "Pen. rematch": pair["rematch_penalty"],
+            "Indice mismatch": pair["mismatch_index"],
         }
     )
 
@@ -269,7 +313,7 @@ else:
     st.dataframe(pd.DataFrame(leftover_rows), use_container_width=True, hide_index=True)
 
 st.caption(
-    "Score più basso = matchup migliore. "
+    "Indice mismatch più basso = accoppiamento migliore. "
     "La selezione finale usa un algoritmo greedy: prende la migliore coppia disponibile, "
     "poi esclude quei due atleti e continua."
 )
