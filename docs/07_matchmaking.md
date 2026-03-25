@@ -1,76 +1,44 @@
 # Matchmaking
 
 ## Obiettivo
-Suggerire accoppiamenti ragionevolmente equilibrati, senza rendere il sistema una scatola nera.
 
-## Filosofia
-Il matchmaking non impone automaticamente i match.
+Il modulo di matchmaking suggerisce coppie di atleti per i prossimi incontri
+basandosi su criteri di equilibrio e compatibilità. Non impone i match:
+presenta una classifica di accoppiamenti e lascia all'utente la decisione
+finale.
 
-La prima versione:
-- genera coppie valide
-- stima una compatibilità
-- propone gli accoppiamenti migliori
-- lascia all'utente la decisione finale
+## Logica generale
 
-## Vincoli rigidi attuali
-Una coppia è valida solo se:
-- i due atleti sono diversi
-- condividono lo stesso stile
-- la differenza di peso non supera la soglia scelta
-- la differenza di level non supera la soglia scelta
-- la differenza di età non supera la soglia scelta, se impostata
-- se richiesto, appartengono allo stesso sesso
+L'algoritmo segue due fasi:
 
-## Evento di riferimento
-L'evento selezionato definisce la data del pairing.
+1. **Generazione delle coppie candidate** – tutte le combinazioni di atleti
+   che rispettano una serie di vincoli rigidi.
+2. **Selezione greedy** – a partire dalle coppie ordinate per indice di
+   mismatch (dal più basso al più alto), seleziona le migliori disponibili
+   evitando di riutilizzare lo stesso atleta.
 
-Logica attuale:
-- età calcolata alla data di quell'evento
-- storico considerato solo fino a quell'evento
+## Vincoli rigidi
 
-## Coppie candidate
-Sono tutte le coppie valide che rispettano i vincoli minimi.
+Una coppia è considerata valida se soddisfa tutte le seguenti condizioni:
 
-## Accoppiamenti suggeriti
-Sono la proposta finale del sistema.
+- **Atleti distinti**: un atleta non può essere accoppiato con sé stesso.
+- **Stesso stile**: entrambi praticano lo stesso stile di lotta.
+- **Differenza di peso limitata**: `|peso_A − peso_B|` non supera
+  `max_weight_diff` (di default 10 kg).
+- **Differenza di level limitata**: `|level_A − level_B|` non supera
+  `max_level_diff` (di default 2).
+- **Differenza di età limitata**: se `max_age_diff` è impostato, la
+  differenza d'età calcolata alla data dell'evento non deve superarla.
+- **Stesso sesso** (opzionale): se attivato, vengono generati solo match
+  tra atleti dello stesso sesso.
 
-La selezione avviene con approccio greedy:
-1. ordina le coppie candidate dal mismatch più basso al più alto
-2. prende la migliore disponibile
-3. esclude i due atleti già usati
-4. continua finché possibile
+Il parametro `use_rating` controlla se la differenza di rating viene
+considerata nell'indice di mismatch e `avoid_rematches` permette di
+penalizzare o ignorare gli incontri già avvenuti:contentReference[oaicite:8]{index=8}.
 
-## Indice mismatch
-L'indice mismatch è una penalità di incompatibilità:
-- più basso = meglio
-- più alto = peggio
+## Calcolo dell'indice di mismatch
 
-## Componenti attuali del mismatch
-- componente peso
-- componente level
-- componente rating
-- componente età
-- penalità rematch
-
-## Parametri attuali
-Centralizzati in `src/settings.py`:
-- fattore peso
-- fattore level
-- divisore rating
-- fattore età
-- penalità rematch
-- soglie di default
-
-## Perché i dettagli numerici non sono mostrati troppo in UI
-Le formule sono ancora sperimentali.
-
-La UI principale deve restare leggera.
-
-La documentazione e in futuro una pagina admin descriveranno e governeranno i parametri.
-
-## Evoluzioni previste
-- salvare accoppiamenti suggeriti come match programmati
-- supportare status `scheduled / completed`
-- usare ultimo peso reale invece di default_weight in alcune modalità
-- gestire filtri/preset federali
-- rendere i pesi del mismatch modificabili da admin
+Per ogni coppia candidata si calcola un **indice di mismatch**, che
+rappresenta una penalità cumulativa. Più è alto l'indice, più i due atleti
+sono considerati incompatibili. L'indice attuale è la somma di cinque
+componenti:
