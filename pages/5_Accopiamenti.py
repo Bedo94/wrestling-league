@@ -12,9 +12,13 @@ from src.pairing import (
     generate_candidate_pairs,
     select_greedy_pairings,
 )
+from src.db_runtime import bootstrap_database_from_state
+
+bootstrap_database_from_state()
 
 st.title("Accoppiamenti / Matchmaking")
 st.caption("Più basso è l’indice mismatch, più l’accoppiamento è equilibrato.")
+
 
 def athlete_label(athlete, reference_date: date) -> str:
     full_name = f"{athlete.first_name} {athlete.last_name or ''}".strip()
@@ -115,10 +119,6 @@ with col1:
         "Differenza level massima per coppia",
         options=list(level_diff_labels.keys()),
         index=2,
-        help=(
-            "Indica quante fasce tecniche possono separare i due atleti. "
-            "Esempio: Base vs Intermedio = 1 fascia di differenza."
-        ),
     )
     max_pair_level_diff = level_diff_labels[selected_level_diff_label]
 
@@ -154,19 +154,11 @@ with col2:
 use_rating = st.checkbox(
     "Usa rating nella compatibilità",
     value=True,
-    help=(
-        "Se attivo, il sistema considera anche la differenza di rating per raffinare "
-        "gli accoppiamenti."
-    ),
 )
 
 avoid_rematches = st.checkbox(
     "Penalizza rematch",
     value=True,
-    help=(
-        "Se attivo, il sistema sfavorisce accoppiamenti tra atleti che si sono già "
-        "affrontati in passato."
-    ),
 )
 
 same_sex_only = st.checkbox(
@@ -188,19 +180,24 @@ if len(filtered_pool) < 2:
     st.warning("Dopo i filtri rimangono meno di due atleti.")
     st.stop()
 
-athlete_options = {athlete.id: athlete_label(athlete, reference_date) for athlete in filtered_pool}
-
-selected_athlete_ids = st.multiselect(
-    "Atleti da includere",
-    options=list(athlete_options.keys()),
-    default=list(athlete_options.keys()),
-    format_func=lambda athlete_id: athlete_options[athlete_id],
+excluded_athletes = st.multiselect(
+    "Escludi atleti dal pool",
+    options=filtered_pool,
+    default=[],
+    format_func=lambda athlete: athlete_label(athlete, reference_date),
+    placeholder="Cerca e seleziona gli atleti da escludere",
 )
 
-selected_athletes = [athlete for athlete in filtered_pool if athlete.id in selected_athlete_ids]
+excluded_ids = {athlete.id for athlete in excluded_athletes}
+
+selected_athletes = [
+    athlete
+    for athlete in filtered_pool
+    if athlete.id not in excluded_ids
+]
 
 if len(selected_athletes) < 2:
-    st.warning("Seleziona almeno due atleti per generare accoppiamenti.")
+    st.warning("Dopo l’esclusione rimangono meno di due atleti.")
     st.stop()
 
 candidates = generate_candidate_pairs(
@@ -221,11 +218,12 @@ if not candidates:
 
 selected_pairs, leftovers = select_greedy_pairings(candidates, selected_athletes)
 
-st.subheader("Accoppiamenti suggeriti")
-st.caption(
-    "Questa è la selezione finale proposta dal sistema. "
-    "Ogni atleta compare al massimo una volta."
+show_advanced = st.checkbox(
+    "Mostra dettagli avanzati",
+    value=False,
 )
+
+st.subheader("Accoppiamenti suggeriti")
 
 if not selected_pairs:
     st.info("Nessun accoppiamento selezionabile.")
@@ -251,69 +249,60 @@ else:
 
     st.dataframe(pd.DataFrame(selected_rows), use_container_width=True, hide_index=True)
 
-st.subheader("Tutte le coppie candidate")
-st.caption(
-    "Questa tabella mostra tutte le coppie valide considerate dal sistema "
-    "prima della selezione finale."
-)
+if show_advanced:
+    st.subheader("Tutte le coppie candidate")
 
-candidate_rows = []
-for pair in candidates:
-    athlete_a = pair["athlete_a"]
-    athlete_b = pair["athlete_b"]
+    candidate_rows = []
+    for pair in candidates:
+        athlete_a = pair["athlete_a"]
+        athlete_b = pair["athlete_b"]
 
-    candidate_rows.append(
-        {
-            "Atleta A": f"{athlete_a.first_name} {athlete_a.last_name or ''}".strip(),
-            "Atleta B": f"{athlete_b.first_name} {athlete_b.last_name or ''}".strip(),
-            "Stile": pair["style"],
-            "Peso A": float(athlete_a.default_weight),
-            "Peso B": float(athlete_b.default_weight),
-            "Level A": get_level_label(athlete_a.level),
-            "Level B": get_level_label(athlete_b.level),
-            "Rating A": pair["rating_a"],
-            "Rating B": pair["rating_b"],
-            "Età A": pair["age_a"],
-            "Età B": pair["age_b"],
-            "Δ peso": pair["weight_diff"],
-            "Δ level": pair["level_gap_label"],
-            "Δ rating": pair["rating_diff"],
-            "Δ età": pair["age_diff"],
-            "Storico": pair["previous_matches_label"],
-            "Comp. peso": pair["weight_component"],
-            "Comp. level": pair["level_component"],
-            "Comp. rating": pair["rating_component"],
-            "Comp. età": pair["age_component"],
-            "Pen. rematch": pair["rematch_penalty"],
-            "Indice mismatch": pair["mismatch_index"],
-        }
-    )
-
-st.dataframe(pd.DataFrame(candidate_rows), use_container_width=True, hide_index=True)
-
-st.subheader("Atleti senza accoppiamento")
-
-if not leftovers:
-    st.success("Tutti gli atleti selezionati hanno ricevuto un accoppiamento.")
-else:
-    leftover_rows = []
-    for athlete in leftovers:
-        leftover_rows.append(
+        candidate_rows.append(
             {
-                "Atleta": f"{athlete.first_name} {athlete.last_name or ''}".strip(),
-                "Sesso": athlete.sex,
-                "Stile": athlete.style,
-                "Peso": float(athlete.default_weight),
-                "Level": get_level_label(athlete.level),
-                "Rating": athlete.rating if athlete.rating is not None else "N.D.",
-                "Età": calculate_age(athlete.birth_date, reference_date),
+                "Atleta A": f"{athlete_a.first_name} {athlete_a.last_name or ''}".strip(),
+                "Atleta B": f"{athlete_b.first_name} {athlete_b.last_name or ''}".strip(),
+                "Stile": pair["style"],
+                "Peso A": float(athlete_a.default_weight),
+                "Peso B": float(athlete_b.default_weight),
+                "Level A": get_level_label(athlete_a.level),
+                "Level B": get_level_label(athlete_b.level),
+                "Rating A": pair["rating_a"],
+                "Rating B": pair["rating_b"],
+                "Età A": pair["age_a"],
+                "Età B": pair["age_b"],
+                "Δ peso": pair["weight_diff"],
+                "Δ level": pair["level_gap_label"],
+                "Δ rating": pair["rating_diff"],
+                "Δ età": pair["age_diff"],
+                "Storico": pair["previous_matches_label"],
+                "Comp. peso": pair["weight_component"],
+                "Comp. level": pair["level_component"],
+                "Comp. rating": pair["rating_component"],
+                "Comp. età": pair["age_component"],
+                "Pen. rematch": pair["rematch_penalty"],
+                "Indice mismatch": pair["mismatch_index"],
             }
         )
 
-    st.dataframe(pd.DataFrame(leftover_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(candidate_rows), use_container_width=True, hide_index=True)
 
-st.caption(
-    "Indice mismatch più basso = accoppiamento migliore. "
-    "La selezione finale usa un algoritmo greedy: prende la migliore coppia disponibile, "
-    "poi esclude quei due atleti e continua."
-)
+    st.subheader("Atleti senza accoppiamento")
+
+    if not leftovers:
+        st.success("Tutti gli atleti selezionati hanno ricevuto un accoppiamento.")
+    else:
+        leftover_rows = []
+        for athlete in leftovers:
+            leftover_rows.append(
+                {
+                    "Atleta": f"{athlete.first_name} {athlete.last_name or ''}".strip(),
+                    "Sesso": athlete.sex,
+                    "Stile": athlete.style,
+                    "Peso": float(athlete.default_weight),
+                    "Level": get_level_label(athlete.level),
+                    "Rating": athlete.rating if athlete.rating is not None else "N.D.",
+                    "Età": calculate_age(athlete.birth_date, reference_date),
+                }
+            )
+
+        st.dataframe(pd.DataFrame(leftover_rows), use_container_width=True, hide_index=True)

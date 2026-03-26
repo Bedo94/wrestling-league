@@ -8,7 +8,9 @@ from src.levels import get_level_label
 from src.matches import create_match, list_matches
 from src.reference_data import WIN_TYPE_OPTIONS
 from src.scoring import calculate_match_points, validate_weight_difference
+from src.db_runtime import bootstrap_database_from_state
 
+bootstrap_database_from_state()
 st.title("Incontri")
 
 

@@ -6,7 +6,9 @@ import streamlit as st
 from src.athletes import create_athlete, list_athletes, list_teams
 from src.levels import get_level_label, get_level_labels, get_level_from_label
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
+from src.db_runtime import bootstrap_database_from_state
 
+bootstrap_database_from_state()
 st.title("Atleti")
 
 st.markdown(

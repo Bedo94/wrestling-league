@@ -4,6 +4,7 @@ from typing import Any
 from src.athletes import list_athletes
 from src.matches import list_matches
 from src.levels import get_level_label
+from src.settings import TEAM_RANKING_SETTINGS
 
 
 def calculate_age(birth_date: date, reference_date: date) -> int:
@@ -79,7 +80,7 @@ def build_rankings(reference_date: date | None = None) -> list[dict[str, Any]]:
             athlete_b["losses"] += 1
 
     results = []
-    for athlete_id, row in rankings.items():
+    for _, row in rankings.items():
         row["technical_diff"] = row["technical_points_for"] - row["technical_points_against"]
         row["class_points_total"] = round(row["class_points_total"], 2)
 
@@ -101,6 +102,102 @@ def build_rankings(reference_date: date | None = None) -> list[dict[str, Any]]:
             -x["technical_diff"],
             -x["technical_points_for"],
             x["name"].lower(),
+        )
+    )
+
+    for index, row in enumerate(results, start=1):
+        row["rank"] = index
+
+    return results
+
+
+def build_team_rankings(
+    ranking_rows: list[dict[str, Any]],
+    participation_bonus_per_athlete: float | None = None,
+) -> list[dict[str, Any]]:
+    if participation_bonus_per_athlete is None:
+        participation_bonus_per_athlete = float(
+            TEAM_RANKING_SETTINGS["participation_bonus_per_athlete"]
+        )
+
+    teams: dict[str, dict[str, Any]] = {}
+
+    for row in ranking_rows:
+        team_name = (row.get("team") or "").strip() or "Senza team"
+
+        if team_name not in teams:
+            teams[team_name] = {
+                "team": team_name,
+                "athletes_count": 0,
+                "participating_athletes": 0,
+                "matches": 0,
+                "wins": 0,
+                "losses": 0,
+                "class_points_total": 0.0,
+                "technical_points_for": 0.0,
+                "technical_points_against": 0.0,
+                "technical_diff": 0.0,
+                "participation_bonus": 0.0,
+                "team_score": 0.0,
+                "avg_points_per_participating_athlete": 0.0,
+            }
+
+        team_row = teams[team_name]
+        matches = int(row.get("matches", 0))
+        class_points_total = float(row.get("class_points_total", 0.0))
+        technical_points_for = float(row.get("technical_points_for", 0.0))
+        technical_points_against = float(row.get("technical_points_against", 0.0))
+
+        team_row["athletes_count"] += 1
+        if matches > 0:
+            team_row["participating_athletes"] += 1
+
+        team_row["matches"] += matches
+        team_row["wins"] += int(row.get("wins", 0))
+        team_row["losses"] += int(row.get("losses", 0))
+        team_row["class_points_total"] += class_points_total
+        team_row["technical_points_for"] += technical_points_for
+        team_row["technical_points_against"] += technical_points_against
+
+    results = []
+    for team_row in teams.values():
+        team_row["technical_diff"] = (
+            team_row["technical_points_for"] - team_row["technical_points_against"]
+        )
+        team_row["participation_bonus"] = (
+            team_row["participating_athletes"] * participation_bonus_per_athlete
+        )
+        team_row["team_score"] = (
+            team_row["class_points_total"] + team_row["participation_bonus"]
+        )
+
+        if team_row["participating_athletes"] > 0:
+            team_row["avg_points_per_participating_athlete"] = (
+                team_row["class_points_total"] / team_row["participating_athletes"]
+            )
+        else:
+            team_row["avg_points_per_participating_athlete"] = 0.0
+
+        team_row["class_points_total"] = round(team_row["class_points_total"], 2)
+        team_row["technical_points_for"] = round(team_row["technical_points_for"], 2)
+        team_row["technical_points_against"] = round(team_row["technical_points_against"], 2)
+        team_row["technical_diff"] = round(team_row["technical_diff"], 2)
+        team_row["participation_bonus"] = round(team_row["participation_bonus"], 2)
+        team_row["team_score"] = round(team_row["team_score"], 2)
+        team_row["avg_points_per_participating_athlete"] = round(
+            team_row["avg_points_per_participating_athlete"],
+            2,
+        )
+
+        results.append(team_row)
+
+    results.sort(
+        key=lambda x: (
+            -x["team_score"],
+            -x["class_points_total"],
+            -x["wins"],
+            -x["technical_diff"],
+            x["team"].lower(),
         )
     )
 

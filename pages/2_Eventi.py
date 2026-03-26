@@ -2,7 +2,9 @@ import pandas as pd
 import streamlit as st
 
 from src.events import create_event, list_events
+from src.db_runtime import bootstrap_database_from_state
 
+bootstrap_database_from_state()
 st.title("Eventi / Giornate")
 
 st.markdown(

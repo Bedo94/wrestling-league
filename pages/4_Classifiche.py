@@ -1,10 +1,14 @@
 from datetime import date
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from src.ratings import recompute_ratings
-from src.rankings import build_rankings
+from src.rankings import build_rankings, build_team_rankings
+from src.db_runtime import bootstrap_database_from_state
+
+bootstrap_database_from_state()
 
 st.title("Classifiche")
 
@@ -34,6 +38,13 @@ df = pd.DataFrame(rankings)
 all_styles = sorted(df["style"].dropna().unique().tolist())
 all_sexes = sorted(df["sex"].dropna().unique().tolist())
 all_levels = sorted(df["level_label"].dropna().unique().tolist())
+all_teams = sorted(
+    [
+        team.strip()
+        for team in df["team"].dropna().unique().tolist()
+        if isinstance(team, str) and team.strip()
+    ]
+)
 
 min_age = int(df["age"].min())
 max_age = int(df["age"].max())
@@ -92,6 +103,25 @@ with col2:
 show_only_active = st.checkbox("Mostra solo atleti attivi", value=True)
 show_only_with_matches = st.checkbox("Mostra solo atleti con almeno un incontro", value=False)
 
+enable_team_filter = st.checkbox("Filtra per team", value=False)
+
+selected_teams: list[str] = []
+team_filter_mode = "Includi"
+
+if enable_team_filter and all_teams:
+    team_filter_mode = st.radio(
+        "Modalità filtro team",
+        options=["Includi", "Escludi"],
+        horizontal=True,
+    )
+
+    selected_teams = st.multiselect(
+        "Team",
+        options=all_teams,
+        default=[],
+        placeholder="Cerca uno o più team",
+    )
+
 filtered_df = df.copy()
 
 if selected_styles:
@@ -120,6 +150,12 @@ if show_only_active:
 
 if show_only_with_matches:
     filtered_df = filtered_df[filtered_df["matches"] > 0]
+
+if enable_team_filter and selected_teams:
+    if team_filter_mode == "Includi":
+        filtered_df = filtered_df[filtered_df["team"].isin(selected_teams)]
+    else:
+        filtered_df = filtered_df[~filtered_df["team"].isin(selected_teams)]
 
 if filtered_df.empty:
     st.warning("Nessun atleta corrisponde ai filtri selezionati.")
@@ -177,13 +213,70 @@ display_df = filtered_df[
     }
 )
 
-st.subheader("Classifica")
+st.subheader("Classifica atleti")
 
 st.dataframe(
     display_df,
     use_container_width=True,
     hide_index=True,
 )
+
+show_team_ranking = st.checkbox("Mostra classifica team", value=False)
+
+if show_team_ranking:
+    ranking_rows: list[dict[str, Any]] = [
+        {str(k): v for k, v in row.items()}
+        for row in filtered_df.to_dict(orient="records")
+    ]
+
+    team_rows = build_team_rankings(
+        ranking_rows=ranking_rows,
+    )
+
+    if team_rows:
+        team_df = pd.DataFrame(team_rows).rename(
+            columns={
+                "rank": "Posizione",
+                "team": "Team",
+                "athletes_count": "Atleti nel filtro",
+                "participating_athletes": "Atleti partecipanti",
+                "matches": "Incontri",
+                "wins": "Vittorie",
+                "losses": "Sconfitte",
+                "class_points_total": "Punti classifica",
+                "participation_bonus": "Bonus partecipazione",
+                "team_score": "Punteggio team",
+                "avg_points_per_participating_athlete": "Media punti/partecipante",
+                "technical_points_for": "Punti fatti",
+                "technical_points_against": "Punti subiti",
+                "technical_diff": "Differenza punti",
+            }
+        )
+
+        st.subheader("Classifica team")
+
+        st.dataframe(
+            team_df[
+                [
+                    "Posizione",
+                    "Team",
+                    "Atleti nel filtro",
+                    "Atleti partecipanti",
+                    "Incontri",
+                    "Vittorie",
+                    "Sconfitte",
+                    "Punti classifica",
+                    "Bonus partecipazione",
+                    "Punteggio team",
+                    "Media punti/partecipante",
+                    "Punti fatti",
+                    "Punti subiti",
+                    "Differenza punti",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 st.caption(
     "Ordinamento: punti classifica, poi vittorie, poi differenza punti tecnici, poi punti fatti."

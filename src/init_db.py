@@ -1,11 +1,6 @@
-from src.database import engine
-from src.models import Base
+import src.models  # noqa: F401
+from src.database import Base, get_engine
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-
-
-if __name__ == "__main__":
-    init_db()
-    print("Database inizializzato correttamente.")
+    Base.metadata.create_all(bind=get_engine())

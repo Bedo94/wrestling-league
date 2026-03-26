@@ -39,3 +39,7 @@ RATINGS_SETTINGS = {
     "retirement_match_impact": 0.35,
     "forfeit_match_impact": 0.05,
 }
+
+TEAM_RANKING_SETTINGS = {
+    "participation_bonus_per_athlete": 2.0,
+}
