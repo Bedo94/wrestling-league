@@ -16,6 +16,12 @@ from src.db_runtime import (
     save_uploaded_sqlite_file,
     set_database_selection,
 )
+from src.export_service import (
+    EXCEL_DOWNLOAD_MIME,
+    SQLITE_DOWNLOAD_MIME,
+    export_active_database_to_excel_bytes,
+    export_active_database_to_sqlite_bytes,
+)
 
 bootstrap_database_from_state()
 active_db = get_active_database_info()
@@ -24,6 +30,7 @@ st.title("Database")
 st.caption("Questa pagina decide quale database usa tutta l'applicazione.")
 
 can_edit_database = bool(st.session_state.get("is_admin", True))
+can_download_database = bool(st.session_state.get("is_admin", True))
 
 if not can_edit_database:
     st.info("La modifica del database è riservata agli admin.")
@@ -34,6 +41,48 @@ st.code(active_db["database_url_masked"])
 
 if active_db["sqlite_path"]:
     st.caption(f"File SQLite attivo: {active_db['sqlite_path']}")
+
+st.markdown("## Download")
+
+download_db_label = "Scarica database locale compatibile (.db)"
+download_db_help = (
+    "Se il backend attivo è PostgreSQL, viene generato uno snapshot SQLite "
+    "compatibile con la modalità locale dell'app."
+)
+
+if active_db["mode"] == DB_MODE_POSTGRES:
+    download_db_label = "Scarica snapshot SQLite (.db)"
+    download_db_help = (
+        "Il backend attivo è PostgreSQL: verrà generato e scaricato "
+        "uno snapshot SQLite dei dati correnti."
+    )
+
+col_download_db, col_download_excel = st.columns(2)
+
+with col_download_db:
+    st.download_button(
+        label=download_db_label,
+        data=export_active_database_to_sqlite_bytes,
+        file_name="wrestling_league.db",
+        mime=SQLITE_DOWNLOAD_MIME,
+        help=download_db_help,
+        disabled=not can_download_database,
+        use_container_width=True,
+    )
+
+with col_download_excel:
+    st.download_button(
+        label="Scarica Excel (.xlsx)",
+        data=export_active_database_to_excel_bytes,
+        file_name="wrestling_league_export.xlsx",
+        mime=EXCEL_DOWNLOAD_MIME,
+        help="Esporta tutte le tabelle del database attivo in un file Excel.",
+        disabled=not can_download_database,
+        use_container_width=True,
+    )
+
+if not can_download_database:
+    st.caption("Il download del database è riservato agli admin.")
 
 st.markdown("## Configurazione")
 

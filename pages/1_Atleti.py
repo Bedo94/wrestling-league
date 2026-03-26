@@ -1,14 +1,22 @@
 from datetime import date
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from src.athletes import create_athlete, list_athletes, list_teams
-from src.levels import get_level_label, get_level_labels, get_level_from_label
-from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
+from src.athletes import (
+    create_athlete,
+    list_athletes,
+    list_teams,
+    update_athletes_from_rows,
+)
 from src.db_runtime import bootstrap_database_from_state
+from src.levels import get_level_label, get_level_labels, get_level_from_label
+from src.ratings import recompute_ratings
+from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
 
 bootstrap_database_from_state()
+
 st.title("Atleti")
 
 st.markdown(
@@ -34,6 +42,7 @@ with st.form("athlete_form", clear_on_submit=True):
         placeholder="Seleziona o scrivi un team",
         accept_new_options=True,
     )
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -85,6 +94,7 @@ with st.form("athlete_form", clear_on_submit=True):
                 default_weight=float(default_weight),
                 rating=None,
             )
+            recompute_ratings()
             st.success(
                 f"Atleta salvato: {athlete.first_name} "
                 f"(id={athlete.id}, livello={get_level_label(athlete.level)})"
@@ -106,18 +116,78 @@ else:
             {
                 "ID": a.id,
                 "Nome": a.first_name,
-                "Cognome": a.last_name,
-                "Nickname": a.nickname,
-                "Team": a.team,
-                "Data nascita": a.birth_date.strftime("%d/%m/%Y"),
+                "Cognome": a.last_name or "",
+                "Nickname": a.nickname or "",
+                "Team": a.team or "",
+                "Data nascita": a.birth_date,
                 "Sesso": a.sex,
                 "Stile": a.style,
                 "Livello": get_level_label(a.level),
-                "Peso": a.default_weight,
+                "Peso": float(a.default_weight),
                 "Rating": a.rating if a.rating is not None else "N.D.",
-                "Attivo": a.active,
+                "Attivo": bool(a.active),
             }
             for a in athletes
         ]
     )
-    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    edited_df = st.data_editor(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=["ID", "Rating"],
+        column_config={
+            "Nome": st.column_config.TextColumn("Nome", required=True),
+            "Cognome": st.column_config.TextColumn("Cognome"),
+            "Nickname": st.column_config.TextColumn("Nickname"),
+            "Team": st.column_config.TextColumn("Team"),
+            "Data nascita": st.column_config.DateColumn(
+                "Data nascita",
+                format="DD/MM/YYYY",
+                min_value=date(1950, 1, 1),
+                max_value=date.today(),
+                required=True,
+            ),
+            "Sesso": st.column_config.SelectboxColumn(
+                "Sesso",
+                options=SEX_OPTIONS,
+                required=True,
+            ),
+            "Stile": st.column_config.SelectboxColumn(
+                "Stile",
+                options=STYLE_OPTIONS,
+                required=True,
+            ),
+            "Livello": st.column_config.SelectboxColumn(
+                "Livello",
+                options=get_level_labels(),
+                required=True,
+            ),
+            "Peso": st.column_config.NumberColumn(
+                "Peso",
+                min_value=1.0,
+                max_value=300.0,
+                step=0.5,
+                required=True,
+            ),
+            "Attivo": st.column_config.CheckboxColumn("Attivo"),
+        },
+        key="athletes_editor",
+    )
+
+    if st.button("Salva modifiche", type="primary"):
+        try:
+            rows: list[dict[str, Any]] = [
+                {str(key): value for key, value in row.items()}
+                for row in edited_df.to_dict(orient="records")
+            ]
+
+            updated_count = update_athletes_from_rows(rows)
+            recompute_ratings()
+            st.success(f"Modifiche salvate correttamente ({updated_count} atleti aggiornati).")
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"Errore durante il salvataggio: {exc}")

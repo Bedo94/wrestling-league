@@ -1,10 +1,14 @@
+from datetime import date
+from typing import Any
+
 import pandas as pd
 import streamlit as st
 
-from src.events import create_event, list_events
 from src.db_runtime import bootstrap_database_from_state
+from src.events import create_event, list_events, update_events_from_rows
 
 bootstrap_database_from_state()
+
 st.title("Eventi / Giornate")
 
 st.markdown(
@@ -58,4 +62,38 @@ else:
             for e in events
         ]
     )
-    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    edited_df = st.data_editor(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=["ID"],
+        column_config={
+            "Nome": st.column_config.TextColumn("Nome", required=True),
+            "Data": st.column_config.DateColumn(
+                "Data",
+                format="DD/MM/YYYY",
+                min_value=date(2000, 1, 1),
+                max_value=date(2100, 12, 31),
+                required=True,
+            ),
+            "Note": st.column_config.TextColumn("Note"),
+        },
+        key="events_editor",
+    )
+
+    if st.button("Salva modifiche eventi", type="primary"):
+        try:
+            rows: list[dict[str, Any]] = [
+                {str(key): value for key, value in row.items()}
+                for row in edited_df.to_dict(orient="records")
+            ]
+
+            updated_count = update_events_from_rows(rows)
+            st.success(f"Modifiche salvate correttamente ({updated_count} eventi aggiornati).")
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"Errore durante il salvataggio: {exc}")
