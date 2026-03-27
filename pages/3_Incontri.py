@@ -1,3 +1,5 @@
+from typing import Optional
+
 import pandas as pd
 import streamlit as st
 
@@ -15,6 +17,10 @@ st.title("Incontri")
 
 MATCH_FLASH_KEY = "matches_flash"
 MATCH_EDIT_ID_KEY = "match_editing_id"
+MATCH_DELETE_CANDIDATE_ID_KEY = "match_delete_candidate_id"
+MATCH_TABLE_SELECTED_ID_KEY = "match_table_selected_id"
+MATCH_IGNORE_TABLE_SYNC_KEY = "match_ignore_table_sync_once"
+
 MATCH_EVENT_ID_KEY = "match_event_id"
 MATCH_ATHLETE_A_ID_KEY = "match_athlete_a_id"
 MATCH_ATHLETE_B_ID_KEY = "match_athlete_b_id"
@@ -40,23 +46,33 @@ def event_label(event) -> str:
     return f"{event.name} — {event.event_date}"
 
 
+def format_athlete_name(athlete) -> str:
+    if athlete is None:
+        return ""
+    return f"{athlete.first_name} {athlete.last_name or ''}".strip()
+
+
+def format_event_name(event, fallback_event_id: int) -> str:
+    if event is None:
+        return f"ID {fallback_event_id}"
+    return event.name
+
+
+def format_event_date(event):
+    if event is None:
+        return ""
+    return event.event_date
+
+
 def match_label(match, athletes_map, events_map) -> str:
     athlete_a = athletes_map.get(match.athlete_a_id)
     athlete_b = athletes_map.get(match.athlete_b_id)
     event = events_map.get(match.event_id)
 
-    athlete_a_name = (
-        f"{athlete_a.first_name} {athlete_a.last_name or ''}".strip()
-        if athlete_a
-        else f"ID {match.athlete_a_id}"
-    )
-    athlete_b_name = (
-        f"{athlete_b.first_name} {athlete_b.last_name or ''}".strip()
-        if athlete_b
-        else f"ID {match.athlete_b_id}"
-    )
-    event_name = event.name if event else f"ID {match.event_id}"
-    event_date = event.event_date if event else ""
+    athlete_a_name = format_athlete_name(athlete_a) or f"ID {match.athlete_a_id}"
+    athlete_b_name = format_athlete_name(athlete_b) or f"ID {match.athlete_b_id}"
+    event_name = format_event_name(event, match.event_id)
+    event_date = format_event_date(event)
 
     return f"#{match.id} — {event_name} {event_date} — {athlete_a_name} vs {athlete_b_name}"
 
@@ -138,6 +154,15 @@ def ensure_match_form_state(event_ids, athlete_ids, athletes_map) -> None:
     if MATCH_EDIT_ID_KEY not in st.session_state:
         st.session_state[MATCH_EDIT_ID_KEY] = None
 
+    if MATCH_DELETE_CANDIDATE_ID_KEY not in st.session_state:
+        st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = None
+
+    if MATCH_TABLE_SELECTED_ID_KEY not in st.session_state:
+        st.session_state[MATCH_TABLE_SELECTED_ID_KEY] = None
+
+    if MATCH_IGNORE_TABLE_SYNC_KEY not in st.session_state:
+        st.session_state[MATCH_IGNORE_TABLE_SYNC_KEY] = False
+
 
 def load_match_into_form(match) -> None:
     st.session_state[MATCH_EDIT_ID_KEY] = match.id
@@ -155,12 +180,29 @@ def load_match_into_form(match) -> None:
     st.session_state[MATCH_NOTES_KEY] = match.notes or ""
 
 
+def get_selected_match_from_table(df: pd.DataFrame, matches: list):
+    table_state = st.session_state.get("matches_table")
+    selected_rows: list[int] = []
+
+    try:
+        if table_state is not None:
+            selected_rows = table_state["selection"]["rows"]
+    except Exception:
+        selected_rows = []
+
+    if not selected_rows:
+        return None
+
+    selected_row_idx = selected_rows[-1]
+    selected_match_id = int(df.iloc[selected_row_idx]["ID"])
+    return next((match for match in matches if match.id == selected_match_id), None)
+
+
 show_flash()
 
 events = list_events()
 all_athletes = list_athletes(include_inactive=True)
 active_athletes = [athlete for athlete in all_athletes if athlete.active]
-matches = list_matches()
 
 if not events:
     st.warning("Prima devi creare almeno un evento.")
@@ -178,71 +220,52 @@ athlete_ids = [athlete.id for athlete in all_athletes]
 
 ensure_match_form_state(event_ids, athlete_ids, athletes_map)
 
-st.subheader("Correggi o elimina incontro")
+matches = list_matches()
+events_map = {event.id: event for event in list_events()}
+athletes_map = {athlete.id: athlete for athlete in list_athletes(include_inactive=True)}
 
-if not matches:
-    st.info("Nessun incontro presente.")
-else:
-    match_ids = [match.id for match in matches]
+rows = []
+for match in matches:
+    athlete_a = athletes_map.get(match.athlete_a_id)
+    athlete_b = athletes_map.get(match.athlete_b_id)
+    winner = athletes_map.get(match.winner_id) if match.winner_id else None
+    event = events_map.get(match.event_id)
 
-    selected_existing_match_id = st.selectbox(
-        "Incontro esistente",
-        options=[None] + match_ids,
-        format_func=lambda match_id: (
-            "Seleziona un incontro"
-            if match_id is None
-            else match_label(
-                next(match for match in matches if match.id == match_id),
-                athletes_map,
-                events_map,
-            )
-        ),
-        key="selected_existing_match_id",
+    rows.append(
+        {
+            "ID": match.id,
+            "Evento": format_event_name(event, match.event_id),
+            "Data": format_event_date(event),
+            "Stile": match.style,
+            "Atleta A": format_athlete_name(athlete_a),
+            "Peso A": match.weight_a,
+            "Livello A": get_level_label(match.level_a),
+            "Punti A": match.raw_score_a,
+            "Atleta B": format_athlete_name(athlete_b),
+            "Peso B": match.weight_b,
+            "Livello B": get_level_label(match.level_b),
+            "Punti B": match.raw_score_b,
+            "Vincitore": format_athlete_name(winner),
+            "Modo vittoria": match.win_type,
+            "Punti classifica A": match.points_a if match.points_a is not None else "N.D.",
+            "Punti classifica B": match.points_b if match.points_b is not None else "N.D.",
+            "Note": match.notes or "",
+        }
     )
 
-    col_action_1, col_action_2 = st.columns(2)
+matches_df = pd.DataFrame(rows)
 
-    with col_action_1:
-        if st.button("Carica nel form", use_container_width=True):
-            if selected_existing_match_id is None:
-                st.warning("Seleziona prima un incontro.")
-            else:
-                selected_match = next(
-                    (match for match in matches if match.id == selected_existing_match_id),
-                    None,
-                )
-                if selected_match is None:
-                    st.error("Incontro non trovato.")
-                else:
-                    load_match_into_form(selected_match)
-                    st.rerun()
+selected_match = None
+if not matches_df.empty:
+    selected_match = get_selected_match_from_table(matches_df, matches)
 
-    with col_action_2:
-        if st.button("Elimina incontro", use_container_width=True):
-            if selected_existing_match_id is None:
-                st.warning("Seleziona prima un incontro.")
-            else:
-                try:
-                    delete_match(selected_existing_match_id)
-                    recompute_ratings()
-
-                    if st.session_state.get(MATCH_EDIT_ID_KEY) == selected_existing_match_id:
-                        reset_match_form(event_ids, athlete_ids, athletes_map)
-
-                    set_flash("success", f"Incontro #{selected_existing_match_id} eliminato.")
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-
-st.divider()
-
-editing_match_id = st.session_state.get(MATCH_EDIT_ID_KEY)
-
-if editing_match_id is not None:
-    st.info(f"Stai correggendo l'incontro #{editing_match_id}.")
-    if st.button("Annulla correzione"):
-        reset_match_form(event_ids, athlete_ids, athletes_map)
-        st.rerun()
+    if st.session_state.get(MATCH_IGNORE_TABLE_SYNC_KEY):
+        st.session_state[MATCH_IGNORE_TABLE_SYNC_KEY] = False
+    elif selected_match is not None:
+        last_loaded_match_id = st.session_state.get(MATCH_TABLE_SELECTED_ID_KEY)
+        if selected_match.id != last_loaded_match_id:
+            load_match_into_form(selected_match)
+            st.session_state[MATCH_TABLE_SELECTED_ID_KEY] = selected_match.id
 
 st.subheader("Aggiungi incontro")
 
@@ -324,9 +347,7 @@ with st.form("match_form"):
 
     notes = st.text_area("Note", key=MATCH_NOTES_KEY)
 
-    submitted = st.form_submit_button(
-        "Salva correzione" if editing_match_id is not None else "Salva incontro"
-    )
+    submitted = st.form_submit_button("Salva")
 
 if submitted:
     if athlete_a.id == athlete_b.id:
@@ -354,6 +375,8 @@ if submitted:
                 athlete_b_birth_date=athlete_b.birth_date,
                 event_date=selected_event.event_date,
             )
+
+            editing_match_id = st.session_state.get(MATCH_EDIT_ID_KEY)
 
             if editing_match_id is None:
                 match = create_match(
@@ -403,6 +426,9 @@ if submitted:
 
             recompute_ratings()
             reset_match_form(event_ids, athlete_ids, athletes_map)
+            st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = None
+            st.session_state[MATCH_IGNORE_TABLE_SYNC_KEY] = True
+            st.session_state[MATCH_TABLE_SELECTED_ID_KEY] = match.id
 
             set_flash(
                 "success",
@@ -422,41 +448,62 @@ st.divider()
 
 st.subheader("Lista incontri")
 
-matches = list_matches()
-athletes_map = {a.id: a for a in list_athletes(include_inactive=True)}
-events_map = {e.id: e for e in list_events()}
+if matches_df.empty:
+    st.info("Nessun incontro presente.")
+else:
+    st.dataframe(
+        matches_df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="multi-row",
+        key="matches_table",
+    )
+
+st.subheader("Correggi o elimina incontro")
 
 if not matches:
     st.info("Nessun incontro presente.")
 else:
-    rows = []
-    for match in matches:
-        athlete_a = athletes_map.get(match.athlete_a_id)
-        athlete_b = athletes_map.get(match.athlete_b_id)
-        winner = athletes_map.get(match.winner_id) if match.winner_id else None
-        event = events_map.get(match.event_id)
+    if selected_match is None:
+        st.info("Seleziona una o più righe dalla tabella qui sopra. Il form caricherà automaticamente l'ultima selezionata.")
+    else:
+        st.caption(match_label(selected_match, athletes_map, events_map))
 
-        rows.append(
-            {
-                "ID": match.id,
-                "Evento": event.name if event else f"ID {match.event_id}",
-                "Data": event.event_date if event else "",
-                "Stile": match.style,
-                "Atleta A": f"{athlete_a.first_name} {athlete_a.last_name or ''}".strip() if athlete_a else "",
-                "Peso A": match.weight_a,
-                "Livello A": get_level_label(match.level_a),
-                "Punti A": match.raw_score_a,
-                "Atleta B": f"{athlete_b.first_name} {athlete_b.last_name or ''}".strip() if athlete_b else "",
-                "Peso B": match.weight_b,
-                "Livello B": get_level_label(match.level_b),
-                "Punti B": match.raw_score_b,
-                "Vincitore": f"{winner.first_name} {winner.last_name or ''}".strip() if winner else "",
-                "Modo vittoria": match.win_type,
-                "Punti classifica A": match.points_a if match.points_a is not None else "N.D.",
-                "Punti classifica B": match.points_b if match.points_b is not None else "N.D.",
-                "Note": match.notes or "",
-            }
-        )
+        if st.button("Richiedi eliminazione", use_container_width=True):
+            st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = selected_match.id
+            st.rerun()
 
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+pending_delete_id = st.session_state.get(MATCH_DELETE_CANDIDATE_ID_KEY)
+
+if pending_delete_id is not None:
+    pending_match = next((match for match in matches if match.id == pending_delete_id), None)
+
+    if pending_match is None:
+        st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = None
+    else:
+        st.warning("Stai per eliminare un incontro. L'operazione non può essere annullata.")
+        st.caption(match_label(pending_match, athletes_map, events_map))
+
+        col_confirm, col_cancel = st.columns(2)
+
+        with col_confirm:
+            if st.button("Conferma eliminazione", type="primary", use_container_width=True):
+                try:
+                    delete_match(pending_delete_id)
+                    recompute_ratings()
+
+                    if st.session_state.get(MATCH_EDIT_ID_KEY) == pending_delete_id:
+                        reset_match_form(event_ids, athlete_ids, athletes_map)
+
+                    st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = None
+                    st.session_state[MATCH_IGNORE_TABLE_SYNC_KEY] = True
+                    set_flash("success", f"Incontro #{pending_delete_id} eliminato.")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+
+        with col_cancel:
+            if st.button("Annulla eliminazione", use_container_width=True):
+                st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = None
+                st.rerun()
