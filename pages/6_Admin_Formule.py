@@ -1,6 +1,6 @@
-# pages/6_Admin_Formule.py
 import streamlit as st
 from datetime import date
+from typing import Any
 
 from sqlalchemy import select
 
@@ -11,101 +11,322 @@ from src.formula_config_service import (
     save_parameters,
     reset_to_defaults,
 )
-from src.settings import (
-    SCORING_SETTINGS,
-    MATCHMAKING_SETTINGS,
-    RATINGS_SETTINGS,
-)
 from src.ratings import recompute_ratings, recompute_ratings_from_date
 from src.pairing import generate_candidate_pairs
 from src.database import get_session
 from src.models import Athlete
 
 
-# Ensure the database is configured and schema exists
 bootstrap_database_from_state()
-
-# Load any saved configuration into the in-memory settings dictionaries
 load_config()
 
 st.title("Amministrazione formule")
 st.markdown(
     """
-    In questa pagina puoi personalizzare i parametri utilizzati per le formule di punteggio, rating e matchmaking.
-    I valori modificati vengono salvati nel database e applicati immediatamente. Puoi anche ricalcolare i rating
-    degli atleti dopo aver cambiato i parametri.
+    In questa pagina puoi personalizzare i parametri utilizzati per le formule di rating,
+    matchmaking e punteggio.
+
+    I valori modificati vengono salvati nel database e applicati immediatamente.
     """
 )
 
-# Display formulas for reference
-st.subheader("Formula rating (Elo modificato)")
-st.markdown(
-    r"""
-    Il rating di un atleta viene aggiornato dopo ogni incontro secondo la formula:
 
-    $$
-    E_A = \frac{1}{1 + 10^{(R_B - R_A)/400}} \quad\quad R'_A = R_A + (K \times I) \times (S_A - E_A)
-    $$
+def format_label(key: str) -> str:
+    return key.replace("_", " ").capitalize()
 
-    dove:
 
-    - $R_A$ e $R_B$ sono i rating pre-match dei due atleti.
-    - $E_A$ è il punteggio atteso per l'atleta A.
-    - $S_A$ è il punteggio effettivo (1 per vittoria, 0.5 per pareggio o proporzionale ai punti).
-    - $K$ è il `k_factor`.
-    - $I$ è l'`impact` del match (normale, ritiro, forfait).
-    """,
-    unsafe_allow_html=True,
-)
+def get_typed_value(
+    source: dict[str, Any],
+    key: str,
+    fallback: Any,
+    expected_type: type,
+) -> Any:
+    raw_value = source.get(key, fallback)
 
-st.subheader("Formula matchmaking (indice di disomogeneità)")
-st.markdown(
-    r"""
-    L'indice di disomogeneità tra due atleti A e B è calcolato così:
+    if expected_type is bool:
+        return bool(raw_value)
+    if expected_type is int:
+        return int(raw_value)
+    if expected_type is float:
+        return float(raw_value)
 
-    $$
-    mismatch = (|peso_A - peso_B| \times weight\_factor) +\ \n    (|livello_A - livello_B| \times level\_factor) +\ \n    \left(\frac{|rating_A - rating_B|}{rating\_divisor}\right) +\ \n    (|età_A - età_B| \times age\_factor) +\ \n    (\text{rematch\_count} \times rematch\_penalty)
-    $$
-    """,
-    unsafe_allow_html=True,
-)
+    return raw_value
 
-st.subheader("Formula punteggio")
-st.markdown(
-    r"""
-    Il punteggio assegnato a ciascun atleta in un match è:
 
-    $$
-    punteggio = (\text{base\_points} + \text{performance\_bonus}) \times weight\_factor \times special\_factor
-    $$
-
-    dove `base_points` dipende dal risultato (vittoria/sconfitta/ritiro/forfait) e `performance_bonus`
-    è proporzionale ai punti tecnici realizzati.
-    """,
-    unsafe_allow_html=True,
-)
-
-# Retrieve current configuration (defaults merged with DB values)
 config = get_full_config()
 
-# Build the form for parameter editing
+rating_config: dict[str, Any] = config.get("ratings", {})
+matchmaking_config: dict[str, Any] = config.get("matchmaking", {})
+scoring_config: dict[str, Any] = config.get("scoring", {})
+
+# ============================================================
+# SPIEGAZIONE GENERALE: COME QUESTI VALORI VENGONO USATI
+# ============================================================
+
+st.subheader("Come vengono usati nel sistema")
+st.markdown(
+    """
+    **Rating**
+    - serve a stimare la forza relativa degli atleti
+    - viene aggiornato dopo ogni incontro
+    - entra nel matchmaking come uno dei fattori del mismatch
+    - viene mostrato nelle classifiche come indicatore dinamico della forza attuale
+
+    **Matchmaking / mismatch**
+    - il sistema genera tutte le coppie candidate possibili
+    - per ogni coppia calcola un `mismatch_index`
+    - più il mismatch è basso, più il match è considerato equilibrato
+    - gli accoppiamenti suggeriti vengono scelti privilegiando le coppie con mismatch minore
+
+    **Punteggio**
+    - i punti calcolati dal sistema di scoring alimentano la classifica
+    - quindi il punteggio incide direttamente sulla posizione in classifica
+    - il rating invece non determina da solo la classifica: serve soprattutto come indicatore dinamico e come supporto al matchmaking
+    """
+)
+
+st.divider()
+
+# ============================================================
+# 1. RATING
+# ============================================================
+
+st.subheader("1. Formula rating (Elo modificato)")
+st.markdown(
+    r"""
+Il rating di un atleta viene aggiornato dopo ogni incontro secondo la formula:
+
+$$
+E_A = \frac{1}{1 + 10^{(R_B - R_A)/400}}
+$$
+
+$$
+R'_A = R_A + (K \times I) \times (S_A - E_A)
+$$
+
+dove:
+
+- $R_A$ e $R_B$ sono i rating pre-match dei due atleti
+- $E_A$ è il punteggio atteso dell'atleta A
+- $S_A$ è il punteggio effettivo dell'atleta A
+- $K$ è il `k_factor`
+- $I$ è l'`impact` del match
+"""
+)
+
+st.markdown(
+    """
+**Che cos'è il punteggio atteso**
+- se due atleti hanno rating simile, il punteggio atteso è vicino a `0.5`
+- se A ha rating molto più alto di B, il punteggio atteso di A è vicino a `1.0`
+- se A è sfavorito, il suo punteggio atteso è più vicino a `0.0`
+
+**Che cos'è il K factor**
+- il `k_factor` controlla quanto il rating è sensibile ai risultati
+- più è alto, più il rating cambia rapidamente
+- più è basso, più il rating è stabile
+
+**Che cos'è l'impact**
+- `normal_match_impact` pesa i match normali
+- `retirement_match_impact` riduce l'effetto dei match vinti/perduti per ritiro
+- `forfeit_match_impact` riduce ancora di più l'effetto dei forfait
+
+In pratica:
+- battere un atleta forte fa salire più del previsto
+- perdere contro un atleta debole fa scendere di più
+- forfait e ritiro modificano il rating molto meno
+"""
+)
+
+with st.expander("Spiegazione intuitiva del metodo Elo"):
+    st.markdown(
+        """
+Il metodo Elo nasce negli scacchi per stimare la forza relativa dei giocatori.
+
+L'idea è molto semplice:
+
+1. ogni atleta ha un rating attuale
+2. da quei rating si stima quanto ci si aspetta che uno faccia meglio dell'altro
+3. dopo il match si confronta il risultato reale con quello atteso
+4. il rating viene corretto in base alla differenza
+
+Quindi il rating non misura solo chi vince, ma anche quanto il risultato fosse sorprendente.
+Se un atleta sfavorito ottiene un grande risultato, guadagna molto di più.
+"""
+    )
+
+st.divider()
+
+# ============================================================
+# 2. MATCHMAKING
+# ============================================================
+
+st.subheader("2. Formula matchmaking (indice di disomogeneità)")
+st.markdown(
+    r"""
+L'indice di disomogeneità tra due atleti A e B è calcolato così:
+
+$$
+mismatch =
+(|peso_A - peso_B| \times weight\_factor)
++
+(|livello_A - livello_B| \times level\_factor)
++
+\left(\frac{|rating_A - rating_B|}{rating\_divisor}\right)
++
+(|età_A - età_B| \times age\_factor)
++
+(\text{rematch\_count} \times rematch\_penalty)
+$$
+"""
+)
+
+st.markdown(
+    """
+**Come viene usato**
+- il sistema costruisce le coppie candidate
+- calcola il mismatch per ogni coppia
+- ordina le coppie dalla migliore alla peggiore
+- privilegia quelle con indice più basso
+
+**Interpretazione dei parametri**
+- `weight_factor`: quanto pesa la differenza di peso
+- `level_factor`: quanto pesa la differenza di livello
+- `rating_divisor`: rende più o meno influente la differenza rating
+- `age_factor`: quanto pesa la differenza di età
+- `rematch_penalty`: penalità per chi si è già affrontato
+"""
+)
+
+st.divider()
+
+# ============================================================
+# 3. PUNTEGGIO
+# ============================================================
+
+st.subheader("3. Formula punteggio")
+st.markdown(
+    r"""
+Il punteggio assegnato a ciascun atleta in un match è:
+
+$$
+punteggio =
+(\text{base\_points} + \text{performance\_bonus})
+\times weight\_factor
+\times special\_factor
+$$
+"""
+)
+
+st.markdown(
+    r"""
+### Base points
+I `base_points` dipendono dal risultato:
+- vittoria normale → `winner_base_points`
+- sconfitta normale → `loser_base_points`
+- ritiro → `retirement_winner_base_points` / `retirement_loser_base_points`
+- forfait → `forfeit_winner_base_points` / `forfeit_loser_base_points`
+
+### Performance bonus
+Il bonus prestazione è calcolato così:
+
+$$
+performance\_bonus = \frac{score}{score + opponent\_score} \times performance\_bonus\_max
+$$
+
+Quindi:
+- più punti tecnici realizzi rispetto all'avversario, più bonus prendi
+- il valore massimo del bonus è `performance_bonus_max`
+
+### Weight factor
+Il fattore peso nasce dalla differenza di peso:
+
+$$
+weight\_factor = 1 + ((peso\_avversario - peso\_proprio) \times weight\_bonus\_per\_kg)
+$$
+
+poi viene limitato tra `0.5` e `1.5`.
+
+### Special factor
+Lo `special_factor` vale:
+- `special_bonus_factor` se l'atleta è **femmina** oppure **minorenne**
+  e affronta un **maschio adulto**
+- `1.0` in tutti gli altri casi
+
+Questa regola era nata per dare un bonus nei match considerati più sfavorevoli,
+in particolare nei casi **femmina vs maschio adulto** e **minorenne vs maschio adulto**.
+"""
+)
+
+st.divider()
+
+# ============================================================
+# FORM PARAMETRI
+# ORDINE: RATING -> MATCHMAKING -> SCORING
+# ============================================================
+
 with st.form(key="config_form"):
-    st.header("Parametri Scoring (punti)")
-    scoring_inputs = {}
-    for key, default in config.get("scoring", {}).items():
-        # user-friendly label
-        label = key.replace("_", " ").capitalize()
-        scoring_inputs[key] = st.number_input(
-            label,
-            value=float(default),
-            format="%.3f",
+    st.header("Parametri Rating")
+    ratings_inputs: dict[str, Any] = {}
+
+    rating_order = [
+        "default_start_rating",
+        "k_factor",
+        "normal_match_impact",
+        "retirement_match_impact",
+        "forfeit_match_impact",
+    ]
+
+    for key in rating_order:
+        if key not in rating_config:
+            continue
+
+        default = rating_config[key]
+        label = format_label(key)
+
+        if isinstance(default, int) and not isinstance(default, bool):
+            ratings_inputs[key] = st.number_input(
+                label,
+                value=int(default),
+                step=1,
+                format="%d",
+            )
+        else:
+            ratings_inputs[key] = st.number_input(
+                label,
+                value=float(default),
+                format="%.3f",
+            )
+
+    if "level_start_ratings" in rating_config:
+        st.caption(
+            f"Valori iniziali per livello (sola lettura): {rating_config['level_start_ratings']}"
         )
 
     st.header("Parametri Matchmaking")
-    matchmaking_inputs = {}
-    for key, default in config.get("matchmaking", {}).items():
-        label = key.replace("_", " ").capitalize()
-        # booleans as checkboxes, integers as integer inputs, floats as floats
+    matchmaking_inputs: dict[str, Any] = {}
+
+    matchmaking_order = [
+        "max_weight_diff_default",
+        "weight_factor",
+        "max_level_diff_default",
+        "level_factor",
+        "use_rating_default",
+        "rating_divisor",
+        "max_age_diff_default",
+        "age_factor",
+        "avoid_rematches_default",
+        "rematch_penalty",
+        "same_sex_only_default",
+    ]
+
+    for key in matchmaking_order:
+        if key not in matchmaking_config:
+            continue
+
+        default = matchmaking_config[key]
+        label = format_label(key)
+
         if isinstance(default, bool):
             matchmaking_inputs[key] = st.checkbox(label, value=bool(default))
         elif isinstance(default, int) and not isinstance(default, bool):
@@ -122,22 +343,39 @@ with st.form(key="config_form"):
                 format="%.3f",
             )
 
-    st.header("Parametri Rating")
-    ratings_inputs = {}
-    for key, default in config.get("ratings", {}).items():
-        # skip non-editable structures like level_start_ratings
-        if key == "level_start_ratings":
+    st.header("Parametri Scoring (punti)")
+    scoring_inputs: dict[str, Any] = {}
+
+    scoring_order = [
+        "max_weight_diff_kg",
+        "weight_bonus_per_kg",
+        "winner_base_points",
+        "loser_base_points",
+        "performance_bonus_max",
+        "minor_age_threshold",
+        "special_bonus_factor",
+        "retirement_winner_base_points",
+        "retirement_loser_base_points",
+        "forfeit_winner_base_points",
+        "forfeit_loser_base_points",
+    ]
+
+    for key in scoring_order:
+        if key not in scoring_config:
             continue
-        label = key.replace("_", " ").capitalize()
+
+        default = scoring_config[key]
+        label = format_label(key)
+
         if isinstance(default, int) and not isinstance(default, bool):
-            ratings_inputs[key] = st.number_input(
+            scoring_inputs[key] = st.number_input(
                 label,
                 value=int(default),
                 step=1,
                 format="%d",
             )
         else:
-            ratings_inputs[key] = st.number_input(
+            scoring_inputs[key] = st.number_input(
                 label,
                 value=float(default),
                 format="%.3f",
@@ -146,32 +384,38 @@ with st.form(key="config_form"):
     st.header("Opzioni")
     recalc = st.checkbox("Ricalcola rating dopo il salvataggio", value=False)
     recalc_scope = "Completo"
+
     if recalc:
         recalc_scope = st.radio(
             "Ambito ricalcolo rating",
             options=["Completo", "Solo dai match futuri"],
             horizontal=True,
         )
+
     preview = st.checkbox(
-        "Mostra anteprima mismatch su due atleti campione", value=False
+        "Mostra anteprima mismatch su due atleti campione",
+        value=False,
     )
 
     submit = st.form_submit_button("Salva parametri")
     reset = st.form_submit_button("Ripristina valori default")
+
 
 if reset:
     reset_to_defaults()
     st.warning("Tutti i parametri sono stati ripristinati ai valori di default.")
     st.stop()
 
+
 if submit:
     values = {
-        "scoring": scoring_inputs,
-        "matchmaking": matchmaking_inputs,
         "ratings": ratings_inputs,
+        "matchmaking": matchmaking_inputs,
+        "scoring": scoring_inputs,
     }
     save_parameters(values)
     st.success("Parametri salvati.")
+
     if recalc:
         if recalc_scope == "Completo":
             recompute_ratings()
@@ -179,11 +423,15 @@ if submit:
         else:
             recompute_ratings_from_date(date.today())
             st.info("Rating ricalcolati solo per i match futuri.")
-    # reload the configuration into in-memory settings
+
     load_config()
+    config = get_full_config()
+    rating_config = config.get("ratings", {})
+    matchmaking_config = config.get("matchmaking", {})
+    scoring_config = config.get("scoring", {})
+
 
 if preview:
-    # Preview mismatch index for a pair of active athletes
     session = get_session()
     try:
         athletes: list[Athlete] = list(
@@ -193,42 +441,42 @@ if preview:
         if len(athletes) >= 2:
             sample_athletes: list[Athlete] = athletes[:2]
 
-            max_weight_diff = float(
-                matchmaking_inputs.get(
-                    "max_weight_diff_default",
-                    config["matchmaking"]["max_weight_diff_default"],
-                )
+            max_weight_diff = get_typed_value(
+                matchmaking_inputs,
+                "max_weight_diff_default",
+                matchmaking_config["max_weight_diff_default"],
+                float,
             )
-            max_level_diff = int(
-                matchmaking_inputs.get(
-                    "max_level_diff_default",
-                    config["matchmaking"]["max_level_diff_default"],
-                )
+            max_level_diff = get_typed_value(
+                matchmaking_inputs,
+                "max_level_diff_default",
+                matchmaking_config["max_level_diff_default"],
+                int,
             )
 
             raw_max_age_diff = matchmaking_inputs.get(
                 "max_age_diff_default",
-                config["matchmaking"]["max_age_diff_default"],
+                matchmaking_config["max_age_diff_default"],
             )
             max_age_diff = None if raw_max_age_diff is None else int(raw_max_age_diff)
 
-            use_rating = bool(
-                matchmaking_inputs.get(
-                    "use_rating_default",
-                    config["matchmaking"]["use_rating_default"],
-                )
+            use_rating = get_typed_value(
+                matchmaking_inputs,
+                "use_rating_default",
+                matchmaking_config["use_rating_default"],
+                bool,
             )
-            avoid_rematches = bool(
-                matchmaking_inputs.get(
-                    "avoid_rematches_default",
-                    config["matchmaking"]["avoid_rematches_default"],
-                )
+            avoid_rematches = get_typed_value(
+                matchmaking_inputs,
+                "avoid_rematches_default",
+                matchmaking_config["avoid_rematches_default"],
+                bool,
             )
-            same_sex_only = bool(
-                matchmaking_inputs.get(
-                    "same_sex_only_default",
-                    config["matchmaking"]["same_sex_only_default"],
-                )
+            same_sex_only = get_typed_value(
+                matchmaking_inputs,
+                "same_sex_only_default",
+                matchmaking_config["same_sex_only_default"],
+                bool,
             )
 
             sample_pairs = generate_candidate_pairs(
