@@ -64,3 +64,21 @@ class Match(Base):
     points_b: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class FormulaParameter(Base):
+    """
+    Store user-configurable parameters for scoring, matchmaking, ratings
+    and other derived formulas. Each parameter is identified by a group
+    (section) and a key. Values are stored as strings along with their
+    original type to allow parsing back into Python types.
+    """
+
+    __tablename__ = "formula_parameters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[str] = mapped_column(String(100), nullable=False)
+    value_type: Mapped[str] = mapped_column(String(20), nullable=False, default="float")
+    updated_at: Mapped[date] = mapped_column(Date, nullable=False, default=date.today())

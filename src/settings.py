@@ -1,3 +1,13 @@
+"""
+Configuration defaults for the wrestling league formulas.
+
+This module defines the default parameters used for scoring, matchmaking,
+ratings, and team ranking formulas. The values mirror those currently
+in use in the project and can be overridden at runtime by values stored
+in the database via the formula configuration service.
+"""
+
+# Default scoring parameters
 SCORING_SETTINGS = {
     "max_weight_diff_kg": 10.0,
     "weight_bonus_per_kg": 0.05,
@@ -12,6 +22,7 @@ SCORING_SETTINGS = {
     "forfeit_loser_base_points": 0.0,
 }
 
+# Default matchmaking parameters
 MATCHMAKING_SETTINGS = {
     "max_weight_diff_default": 10.0,
     "weight_factor": 3.0,
@@ -26,6 +37,7 @@ MATCHMAKING_SETTINGS = {
     "same_sex_only_default": False,
 }
 
+# Default ratings parameters
 RATINGS_SETTINGS = {
     "level_start_ratings": {
         1: 900.0,
@@ -40,6 +52,7 @@ RATINGS_SETTINGS = {
     "forfeit_match_impact": 0.05,
 }
 
+# Default team ranking parameters
 TEAM_RANKING_SETTINGS = {
     "participation_bonus_per_athlete": 2.0,
 }

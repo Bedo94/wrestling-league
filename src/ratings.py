@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from datetime import date
 
 from sqlalchemy import select
 
@@ -88,6 +89,70 @@ def recompute_ratings() -> Mapping[int, float]:
 
         session.commit()
 
+        return {athlete.id: float(athlete.rating or default_rating) for athlete in athletes}
+    finally:
+        session.close()
+
+
+def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
+    """
+    Recompute athlete ratings for matches occurring on or after the given date.
+
+    Ratings for matches before the given date are left unchanged, serving as the
+    starting point for subsequent updates. This allows experimenting with new
+    formula parameters without disturbing historical ratings prior to the change.
+
+    :param start_date: Matches with event_date >= start_date will be reprocessed.
+    :return: A mapping of athlete IDs to their final ratings after recomputation.
+    """
+    session = get_session()
+    try:
+        # build initial ratings map based on current ratings in DB
+        athletes = list(session.scalars(select(Athlete).order_by(Athlete.id)).all())
+        current_ratings: dict[int, float] = {
+            athlete.id: float(athlete.rating or get_start_rating(athlete.level))
+            for athlete in athletes
+        }
+        default_rating = float(RATINGS_SETTINGS["default_start_rating"])
+        k_factor = float(RATINGS_SETTINGS["k_factor"])
+
+        # fetch matches with their event dates ordered chronologically
+        stmt = (
+            select(Match, Event.event_date)
+            .join(Event, Match.event_id == Event.id)
+            .order_by(Event.event_date.asc(), Match.id.asc())
+        )
+        rows = session.execute(stmt).all()
+
+        for match, event_date in rows:
+            athlete_a_id = match.athlete_a_id
+            athlete_b_id = match.athlete_b_id
+            rating_a: float = current_ratings[athlete_a_id]
+            rating_b: float = current_ratings[athlete_b_id]
+            expected_a = expected_score(rating_a, rating_b)
+            expected_b = 1.0 - expected_a
+            actual_a, actual_b = get_actual_scores(match)
+            impact = get_match_impact(match.win_type)
+            k = k_factor * impact
+
+            # update ratings in memory
+            new_rating_a = rating_a + k * (actual_a - expected_a)
+            new_rating_b = rating_b + k * (actual_b - expected_b)
+            current_ratings[athlete_a_id] = float(new_rating_a)
+            current_ratings[athlete_b_id] = float(new_rating_b)
+
+            # persist only for matches on or after the threshold
+            if event_date >= start_date:
+                match_rating_a = round(new_rating_a, 2)
+                match_rating_b = round(new_rating_b, 2)
+                athlete_a = session.get(Athlete, athlete_a_id)
+                athlete_b = session.get(Athlete, athlete_b_id)
+                if athlete_a:
+                    athlete_a.rating = match_rating_a
+                if athlete_b:
+                    athlete_b.rating = match_rating_b
+
+        session.commit()
         return {athlete.id: float(athlete.rating or default_rating) for athlete in athletes}
     finally:
         session.close()

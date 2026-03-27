@@ -12,6 +12,8 @@ from src.database import (
 )
 from src.init_db import init_db
 
+from src.formula_config_service import load_config
+
 DB_MODE_SQLITE = "sqlite"
 DB_MODE_POSTGRES = "postgresql"
 
@@ -132,6 +134,10 @@ def _apply_database(
 
         configure_database(sqlite_path=resolved_path)
         init_db()
+        try:
+            load_config()
+        except Exception:
+            pass
 
         return {
             "mode": mode,
@@ -150,6 +156,10 @@ def _apply_database(
 
         configure_database(database_url=clean_url)
         init_db()
+        try:
+            load_config()
+        except Exception:
+            pass
 
         return {
             "mode": mode,
