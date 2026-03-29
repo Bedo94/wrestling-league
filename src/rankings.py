@@ -5,6 +5,7 @@ from src.athletes import list_athletes
 from src.matches import list_matches
 from src.levels import get_level_label
 from src.settings import TEAM_RANKING_SETTINGS
+from src.events import list_events
 
 
 def calculate_age(birth_date: date, reference_date: date) -> int:
@@ -14,12 +15,38 @@ def calculate_age(birth_date: date, reference_date: date) -> int:
     return age
 
 
-def build_rankings(reference_date: date | None = None) -> list[dict[str, Any]]:
+def build_rankings(
+    reference_date: date | None = None,
+    years: list[int] | None = None,
+    event_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
     if reference_date is None:
         reference_date = date.today()
 
     athletes = list_athletes(include_inactive=True)
     matches = list_matches()
+
+    selected_years = set(years) if years else None
+    selected_event_ids = set(event_ids) if event_ids else None
+
+    if selected_years or selected_event_ids:
+        events_map = {event.id: event for event in list_events()}
+        filtered_matches = []
+
+        for match in matches:
+            event = events_map.get(match.event_id)
+            if event is None:
+                continue
+
+            if selected_years and event.event_date.year not in selected_years:
+                continue
+
+            if selected_event_ids and match.event_id not in selected_event_ids:
+                continue
+
+            filtered_matches.append(match)
+
+        matches = filtered_matches
 
     rankings: dict[int, dict[str, Any]] = {}
 
@@ -57,7 +84,6 @@ def build_rankings(reference_date: date | None = None) -> list[dict[str, Any]]:
         if athlete_a is None or athlete_b is None:
             continue
 
-        # atleta A
         athlete_a["matches"] += 1
         athlete_a["class_points_total"] += float(match.points_a or 0.0)
         athlete_a["technical_points_for"] += float(match.raw_score_a or 0.0)
@@ -68,7 +94,6 @@ def build_rankings(reference_date: date | None = None) -> list[dict[str, Any]]:
         elif match.winner_id == match.athlete_b_id:
             athlete_a["losses"] += 1
 
-        # atleta B
         athlete_b["matches"] += 1
         athlete_b["class_points_total"] += float(match.points_b or 0.0)
         athlete_b["technical_points_for"] += float(match.raw_score_b or 0.0)

@@ -10,6 +10,7 @@ from src.settings import (
     MATCHMAKING_SETTINGS,
     RATINGS_SETTINGS,
     TEAM_RANKING_SETTINGS,
+    LEVEL_EVALUATION_SETTINGS,
 )
 
 
@@ -32,14 +33,12 @@ def parse_value(raw_value: str, value_type: str | None = None) -> Any:
 
 
 def get_all_defaults() -> Dict[str, Dict[str, Any]]:
-    """
-    Return a nested dict containing the default configuration values for all sections.
-    """
     return {
         "scoring": dict(SCORING_SETTINGS),
         "matchmaking": dict(MATCHMAKING_SETTINGS),
         "ratings": dict(RATINGS_SETTINGS),
         "team_ranking": dict(TEAM_RANKING_SETTINGS),
+        "level_evaluation": dict(LEVEL_EVALUATION_SETTINGS),
     }
 
 
@@ -64,6 +63,8 @@ def load_config() -> None:
                 RATINGS_SETTINGS[key] = value
             elif group == "team_ranking" and key in TEAM_RANKING_SETTINGS:
                 TEAM_RANKING_SETTINGS[key] = value
+            elif group == "level_evaluation" and key in LEVEL_EVALUATION_SETTINGS:
+                LEVEL_EVALUATION_SETTINGS[key] = value            
     finally:
         session.close()
 
@@ -168,4 +169,25 @@ def reset_to_defaults() -> None:
     finally:
         session.close()
     # reload default dictionaries
+    load_config()
+
+
+def get_group_defaults(group: str) -> dict[str, Any]:
+    return get_all_defaults().get(group, {}).copy()
+
+
+def save_group_parameters(group: str, values: dict[str, Any]) -> None:
+    save_parameters({group: values})
+
+
+def reset_group_to_defaults(group: str) -> None:
+    session = get_session()
+    try:
+        session.query(FormulaParameter).filter(
+            FormulaParameter.group_name == group
+        ).delete()
+        session.commit()
+    finally:
+        session.close()
+
     load_config()

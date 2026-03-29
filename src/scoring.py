@@ -140,8 +140,11 @@ def calculate_match_points(
         event_date=event_date,
     )
 
-    result_base_a = get_result_base_points(win_type, winner_id == athlete_a_id)
-    result_base_b = get_result_base_points(win_type, winner_id == athlete_b_id)
+    is_winner_a = winner_id == athlete_a_id
+    is_winner_b = winner_id == athlete_b_id
+
+    result_base_a = get_result_base_points(win_type, is_winner_a)
+    result_base_b = get_result_base_points(win_type, is_winner_b)
 
     if win_type == "Forfait":
         performance_bonus_a = 0.0
@@ -150,8 +153,11 @@ def calculate_match_points(
         performance_bonus_a = get_performance_bonus(raw_score_a, raw_score_b)
         performance_bonus_b = get_performance_bonus(raw_score_b, raw_score_a)
 
-    pre_multiplier_a = result_base_a + performance_bonus_a
-    pre_multiplier_b = result_base_b + performance_bonus_b
+    finish_bonus_a = get_finish_bonus(win_type, is_winner_a)
+    finish_bonus_b = get_finish_bonus(win_type, is_winner_b)
+
+    pre_multiplier_a = result_base_a + performance_bonus_a + finish_bonus_a
+    pre_multiplier_b = result_base_b + performance_bonus_b + finish_bonus_b
 
     total_points_a = pre_multiplier_a * weight_factor_a * special_factor_a
     total_points_b = pre_multiplier_b * weight_factor_b * special_factor_b
@@ -165,8 +171,25 @@ def calculate_match_points(
         "result_base_b": round(result_base_b, 2),
         "performance_bonus_a": round(performance_bonus_a, 2),
         "performance_bonus_b": round(performance_bonus_b, 2),
+        "finish_bonus_a": round(finish_bonus_a, 2),
+        "finish_bonus_b": round(finish_bonus_b, 2),
         "pre_multiplier_a": round(pre_multiplier_a, 2),
         "pre_multiplier_b": round(pre_multiplier_b, 2),
         "total_points_a": round(total_points_a, 2),
         "total_points_b": round(total_points_b, 2),
     }
+
+def get_finish_bonus(win_type: str, is_winner: bool) -> float:
+    if not is_winner:
+        return 0.0
+
+    if win_type == "Schienamento":
+        return float(SCORING_SETTINGS["pinfall_finish_bonus"])
+
+    if win_type == "Ritiro":
+        return float(SCORING_SETTINGS["retirement_finish_bonus"])
+
+    if win_type == "Forfait":
+        return float(SCORING_SETTINGS["forfeit_finish_bonus"])
+
+    return float(SCORING_SETTINGS["points_finish_bonus"])

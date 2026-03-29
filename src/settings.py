@@ -20,6 +20,12 @@ SCORING_SETTINGS = {
     "retirement_loser_base_points": 0.3,
     "forfeit_winner_base_points": 0.5,
     "forfeit_loser_base_points": 0.0,
+
+    # bonus fisso per modalità di chiusura match
+    "points_finish_bonus": 0.0,
+    "pinfall_finish_bonus": 0.4,
+    "retirement_finish_bonus": 0.0,
+    "forfeit_finish_bonus": 0.0,
 }
 
 # Default matchmaking parameters
@@ -61,4 +67,35 @@ TEAM_RANKING_SETTINGS = {
 TOKEN_SETTINGS = {
     "default_token_budget_per_season": 4,
     "default_token_cost": 1,
+}
+
+# Default level evaluation parameters
+LEVEL_EVALUATION_SETTINGS = {
+    # peso massimo delle tre componenti
+    "years_weight": 25.0,
+    "matches_weight": 25.0,
+    "medals_weight": 50.0,
+
+    # soglie di saturazione
+    "years_cap": 10,
+    "matches_cap": 80,
+    "medals_cap": 20.0,
+
+    # peso del tipo di medaglia
+    "gold_weight": 1.0,
+    "silver_weight": 0.6,
+    "bronze_weight": 0.35,
+
+    # peso del tipo di competizione
+    "regional_weight": 1.0,
+    "interregional_weight": 1.4,
+    "national_open_weight": 1.8,
+    "coppa_italia_weight": 2.4,
+    "campionato_italiano_weight": 3.0,
+    "international_weight": 3.5,
+
+    # soglie per livello consigliato
+    "threshold_level_2": 20.0,
+    "threshold_level_3": 45.0,
+    "threshold_level_4": 70.0,
 }

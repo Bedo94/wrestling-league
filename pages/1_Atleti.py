@@ -11,6 +11,7 @@ from src.athletes import (
     update_athletes_from_rows,
 )
 from src.db_runtime import bootstrap_database_from_state
+from src.level_evaluation_ui import render_level_assistant
 from src.levels import get_level_label, get_level_labels, get_level_from_label
 from src.ratings import recompute_ratings
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
@@ -31,7 +32,21 @@ Il campo **token budget** rappresenta quanti token l'atleta può spendere per st
 """
 )
 
+level_labels = get_level_labels()
+
+if "athlete_form_level_label" not in st.session_state:
+    st.session_state["athlete_form_level_label"] = level_labels[0]
+
 st.subheader("Aggiungi atleta")
+
+with st.expander("Assistente livello consigliato (opzionale)", expanded=False):
+    render_level_assistant(
+        state_prefix="athlete_level_assistant",
+        show_apply_button=True,
+        apply_target_session_key="athlete_form_level_label",
+        apply_button_label="Usa livello consigliato nel form",
+    )
+    
 team_options = list_teams()
 
 with st.form("athlete_form", clear_on_submit=True):
@@ -65,8 +80,8 @@ with st.form("athlete_form", clear_on_submit=True):
 
     selected_level_label = st.selectbox(
         "Livello *",
-        options=get_level_labels(),
-        index=0,
+        options=level_labels,
+        key="athlete_form_level_label",
     )
 
     col4, col5 = st.columns(2)
@@ -110,11 +125,13 @@ with st.form("athlete_form", clear_on_submit=True):
                 rating=None,
             )
             recompute_ratings()
+
+            st.session_state["athlete_form_level_label"] = level_labels[0]
+
             st.success(
                 f"Atleta salvato: {athlete.first_name} "
                 f"(id={athlete.id}, livello={get_level_label(athlete.level)})"
             )
-            # forza il ricalcolo della pagina per aggiornare la combo box
             st.rerun()
 
 st.divider()
