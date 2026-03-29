@@ -1,12 +1,13 @@
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.database import get_session
-from src.models import Match
+from src.models import Athlete, Event, Match
 from src.reference_data import WIN_TYPE_OPTIONS
 from src.scoring import calculate_match_points
+from src.settings import TOKEN_SETTINGS
 
 
 def _validate_match_inputs(
@@ -30,6 +31,92 @@ def _validate_match_inputs(
         raise ValueError("Tipo di vittoria non valido.")
 
 
+def _normalize_token_fields(
+    athlete_a_id: int,
+    athlete_b_id: int,
+    is_token_match: bool,
+    token_spender_id: Optional[int],
+    token_cost: int,
+) -> tuple[bool, Optional[int], int]:
+    if not is_token_match:
+        return False, None, 0
+
+    if token_spender_id is None:
+        raise ValueError("Devi indicare quale atleta spende il token.")
+
+    if token_spender_id not in {athlete_a_id, athlete_b_id}:
+        raise ValueError("L'atleta che spende il token deve essere uno dei due partecipanti.")
+
+    if token_cost <= 0:
+        raise ValueError("Il costo token deve essere maggiore di zero.")
+
+    return True, token_spender_id, token_cost
+
+
+def _get_tokens_used_in_season(
+    session,
+    athlete_id: int,
+    season: str,
+    exclude_match_id: Optional[int] = None,
+) -> int:
+    stmt = (
+        select(func.coalesce(func.sum(Match.token_cost), 0))
+        .join(Event, Match.event_id == Event.id)
+        .where(
+            Match.is_token_match.is_(True),
+            Match.token_spender_id == athlete_id,
+            Event.season == season,
+        )
+    )
+
+    if exclude_match_id is not None:
+        stmt = stmt.where(Match.id != exclude_match_id)
+
+    total = session.execute(stmt).scalar_one()
+    return int(total or 0)
+
+
+def _validate_token_usage(
+    session,
+    athlete_a_id: int,
+    athlete_b_id: int,
+    season: str,
+    is_token_match: bool,
+    token_spender_id: Optional[int],
+    token_cost: int,
+    exclude_match_id: Optional[int] = None,
+) -> tuple[bool, Optional[int], int]:
+    is_token_match, token_spender_id, token_cost = _normalize_token_fields(
+        athlete_a_id=athlete_a_id,
+        athlete_b_id=athlete_b_id,
+        is_token_match=is_token_match,
+        token_spender_id=token_spender_id,
+        token_cost=token_cost,
+    )
+
+    if not is_token_match:
+        return False, None, 0
+
+    token_spender = session.get(Athlete, token_spender_id)
+    if token_spender is None:
+        raise ValueError("Atleta che spende il token non trovato.")
+
+    used_tokens = _get_tokens_used_in_season(
+        session=session,
+        athlete_id=token_spender_id,
+        season=season,
+        exclude_match_id=exclude_match_id,
+    )
+
+    remaining_tokens = int(token_spender.token_budget) - used_tokens
+    if remaining_tokens < token_cost:
+        raise ValueError(
+            f"{token_spender.first_name} non ha abbastanza token disponibili per la stagione {season}."
+        )
+
+    return True, token_spender_id, token_cost
+
+
 def _build_match(
     event_id: int,
     athlete_a_id: int,
@@ -45,6 +132,9 @@ def _build_match(
     win_type: str,
     points_a: float,
     points_b: float,
+    is_token_match: bool,
+    token_spender_id: Optional[int],
+    token_cost: int,
     notes: Optional[str] = None,
 ) -> Match:
     return Match(
@@ -62,6 +152,9 @@ def _build_match(
         win_type=win_type,
         points_a=points_a,
         points_b=points_b,
+        is_token_match=is_token_match,
+        token_spender_id=token_spender_id,
+        token_cost=token_cost,
         notes=(notes or "").strip() or None,
     )
 
@@ -125,6 +218,9 @@ def create_match(
     event_date: date,
     winner_id: int,
     win_type: str,
+    is_token_match: bool = False,
+    token_spender_id: Optional[int] = None,
+    token_cost: int = TOKEN_SETTINGS["default_token_cost"],
     notes: Optional[str] = None,
 ) -> Match:
     score_data = _calculate_score_data(
@@ -145,6 +241,20 @@ def create_match(
 
     session = get_session()
     try:
+        event = session.get(Event, event_id)
+        if event is None:
+            raise ValueError(f"Evento con ID {event_id} non trovato.")
+
+        is_token_match, token_spender_id, token_cost = _validate_token_usage(
+            session=session,
+            athlete_a_id=athlete_a_id,
+            athlete_b_id=athlete_b_id,
+            season=event.season,
+            is_token_match=is_token_match,
+            token_spender_id=token_spender_id,
+            token_cost=token_cost,
+        )
+
         match = _build_match(
             event_id=event_id,
             athlete_a_id=athlete_a_id,
@@ -160,6 +270,9 @@ def create_match(
             win_type=win_type,
             points_a=score_data["total_points_a"],
             points_b=score_data["total_points_b"],
+            is_token_match=is_token_match,
+            token_spender_id=token_spender_id,
+            token_cost=token_cost,
             notes=notes,
         )
         session.add(match)
@@ -189,6 +302,9 @@ def replace_match(
     event_date: date,
     winner_id: int,
     win_type: str,
+    is_token_match: bool = False,
+    token_spender_id: Optional[int] = None,
+    token_cost: int = TOKEN_SETTINGS["default_token_cost"],
     notes: Optional[str] = None,
 ) -> Match:
     score_data = _calculate_score_data(
@@ -214,6 +330,21 @@ def replace_match(
             if existing_match is None:
                 raise ValueError(f"Incontro con ID {match_id} non trovato.")
 
+            event = session.get(Event, event_id)
+            if event is None:
+                raise ValueError(f"Evento con ID {event_id} non trovato.")
+
+            is_token_match, token_spender_id, token_cost = _validate_token_usage(
+                session=session,
+                athlete_a_id=athlete_a_id,
+                athlete_b_id=athlete_b_id,
+                season=event.season,
+                is_token_match=is_token_match,
+                token_spender_id=token_spender_id,
+                token_cost=token_cost,
+                exclude_match_id=match_id,
+            )
+
             session.delete(existing_match)
             session.flush()
 
@@ -232,6 +363,9 @@ def replace_match(
                 win_type=win_type,
                 points_a=score_data["total_points_a"],
                 points_b=score_data["total_points_b"],
+                is_token_match=is_token_match,
+                token_spender_id=token_spender_id,
+                token_cost=token_cost,
                 notes=notes,
             )
             session.add(new_match)

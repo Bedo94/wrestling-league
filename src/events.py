@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 
 from src.database import get_session
 from src.models import Event
@@ -39,13 +39,18 @@ def _normalize_event_date(value: Any) -> date:
 def create_event(
     name: str,
     event_date: date,
+    season: str,
     notes: Optional[str] = None,
 ) -> Event:
+    if not season.strip():
+        raise ValueError("La stagione è obbligatoria.")
+
     session = get_session()
     try:
         event = Event(
             name=name.strip(),
             event_date=event_date,
+            season=season.strip(),
             notes=(notes or "").strip() or None,
         )
         session.add(event)
@@ -61,6 +66,20 @@ def list_events() -> list[Event]:
     try:
         stmt = select(Event).order_by(Event.event_date.desc(), Event.id.desc())
         return list(session.scalars(stmt).all())
+    finally:
+        session.close()
+
+
+def list_seasons() -> list[str]:
+    session = get_session()
+    try:
+        stmt = (
+            select(distinct(Event.season))
+            .where(Event.season.is_not(None))
+            .order_by(Event.season.desc())
+        )
+        results = session.execute(stmt).scalars().all()
+        return [season for season in results if season and str(season).strip()]
     finally:
         session.close()
 
@@ -82,8 +101,13 @@ def update_events_from_rows(rows: list[dict[str, Any]]) -> int:
                 if not name:
                     raise ValueError(f"Il nome è obbligatorio per l'evento ID {event_id}.")
 
+                season = str(row["Stagione"]).strip()
+                if not season:
+                    raise ValueError(f"La stagione è obbligatoria per l'evento ID {event_id}.")
+
                 event.name = name
                 event.event_date = _normalize_event_date(row.get("Data"))
+                event.season = season
                 event.notes = _clean_optional_text(row.get("Note"))
 
                 updated_count += 1

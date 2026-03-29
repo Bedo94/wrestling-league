@@ -5,6 +5,7 @@ from sqlalchemy import Boolean, Date, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database import Base
+from src.settings import TOKEN_SETTINGS
 
 
 class Athlete(Base):
@@ -25,6 +26,12 @@ class Athlete(Base):
     rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=None)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    token_budget: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=TOKEN_SETTINGS["default_token_budget_per_season"],
+    )
+
 
 class Event(Base):
     __tablename__ = "events"
@@ -32,6 +39,11 @@ class Event(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     event_date: Mapped[date] = mapped_column(Date, nullable=False)
+    season: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=lambda: str(date.today().year),
+    )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
@@ -62,6 +74,16 @@ class Match(Base):
 
     points_a: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     points_b: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    is_token_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    token_spender_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("athletes.id"), nullable=True
+    )
+    token_cost: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
 
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

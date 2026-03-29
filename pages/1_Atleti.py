@@ -14,6 +14,7 @@ from src.db_runtime import bootstrap_database_from_state
 from src.levels import get_level_label, get_level_labels, get_level_from_label
 from src.ratings import recompute_ratings
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
+from src.settings import TOKEN_SETTINGS
 
 bootstrap_database_from_state()
 
@@ -23,8 +24,10 @@ st.markdown(
     """
 Il campo **livello** rappresenta una stima iniziale manuale del livello tecnico.
 
-Il campo **rating** rappresenterà invece una valutazione dinamica, calcolata in base
-ai risultati ottenuti. Per ora non viene ancora calcolato automaticamente.
+Il campo **rating** rappresenta invece una valutazione dinamica, calcolata in base
+ai risultati ottenuti.
+
+Il campo **token budget** rappresenta quanti token l'atleta può spendere per stagione.
 """
 )
 
@@ -66,13 +69,25 @@ with st.form("athlete_form", clear_on_submit=True):
         index=0,
     )
 
-    default_weight = st.number_input(
-        "Peso di riferimento (kg) *",
-        min_value=1.0,
-        max_value=300.0,
-        value=70.0,
-        step=0.5,
-    )
+    col4, col5 = st.columns(2)
+
+    with col4:
+        default_weight = st.number_input(
+            "Peso di riferimento (kg) *",
+            min_value=1.0,
+            max_value=300.0,
+            value=70.0,
+            step=0.5,
+        )
+
+    with col5:
+        token_budget = st.number_input(
+            "Token budget *",
+            min_value=0,
+            max_value=100,
+            value=int(TOKEN_SETTINGS["default_token_budget_per_season"]),
+            step=1,
+        )
 
     submitted = st.form_submit_button("Salva atleta")
 
@@ -81,7 +96,6 @@ with st.form("athlete_form", clear_on_submit=True):
             st.error("Il nome è obbligatorio.")
         else:
             level = get_level_from_label(selected_level_label)
-
             athlete = create_athlete(
                 first_name=first_name,
                 last_name=last_name,
@@ -92,6 +106,7 @@ with st.form("athlete_form", clear_on_submit=True):
                 style=style,
                 level=level,
                 default_weight=float(default_weight),
+                token_budget=int(token_budget),
                 rating=None,
             )
             recompute_ratings()
@@ -99,6 +114,8 @@ with st.form("athlete_form", clear_on_submit=True):
                 f"Atleta salvato: {athlete.first_name} "
                 f"(id={athlete.id}, livello={get_level_label(athlete.level)})"
             )
+            # forza il ricalcolo della pagina per aggiornare la combo box
+            st.rerun()
 
 st.divider()
 
@@ -124,6 +141,7 @@ else:
                 "Stile": a.style,
                 "Livello": get_level_label(a.level),
                 "Peso": float(a.default_weight),
+                "Token budget": int(a.token_budget),
                 "Rating": a.rating if a.rating is not None else "N.D.",
                 "Attivo": bool(a.active),
             }
@@ -169,6 +187,13 @@ else:
                 min_value=1.0,
                 max_value=300.0,
                 step=0.5,
+                required=True,
+            ),
+            "Token budget": st.column_config.NumberColumn(
+                "Token budget",
+                min_value=0,
+                max_value=100,
+                step=1,
                 required=True,
             ),
             "Attivo": st.column_config.CheckboxColumn("Attivo"),

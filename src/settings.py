@@ -56,3 +56,9 @@ RATINGS_SETTINGS = {
 TEAM_RANKING_SETTINGS = {
     "participation_bonus_per_athlete": 2.0,
 }
+
+# Default token parameters
+TOKEN_SETTINGS = {
+    "default_token_budget_per_season": 4,
+    "default_token_cost": 1,
+}

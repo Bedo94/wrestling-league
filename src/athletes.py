@@ -1,12 +1,13 @@
 from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import distinct, select
+from sqlalchemy import distinct, func, select
 
 from src.database import get_session
 from src.levels import get_level_from_label
-from src.models import Athlete
+from src.models import Athlete, Event, Match
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
+from src.settings import TOKEN_SETTINGS
 
 
 def _clean_optional_text(value: Any) -> Optional[str]:
@@ -48,8 +49,12 @@ def create_athlete(
     style: str,
     level: int,
     default_weight: float,
+    token_budget: int = TOKEN_SETTINGS["default_token_budget_per_season"],
     rating: Optional[float] = None,
 ) -> Athlete:
+    if token_budget < 0:
+        raise ValueError("Il budget token non può essere negativo.")
+
     session = get_session()
     try:
         athlete = Athlete(
@@ -62,6 +67,7 @@ def create_athlete(
             style=style,
             level=level,
             default_weight=default_weight,
+            token_budget=int(token_budget),
             rating=rating,
             active=True,
         )
@@ -94,6 +100,37 @@ def list_teams() -> list[str]:
         )
         results = session.execute(stmt).scalars().all()
         return [team for team in results if team and str(team).strip()]
+    finally:
+        session.close()
+
+
+def get_tokens_remaining_for_season(
+    athlete_id: int,
+    season: str,
+    exclude_match_id: Optional[int] = None,
+) -> int:
+    session = get_session()
+    try:
+        athlete = session.get(Athlete, athlete_id)
+        if athlete is None:
+            return 0
+
+        stmt = (
+            select(func.coalesce(func.sum(Match.token_cost), 0))
+            .join(Event, Match.event_id == Event.id)
+            .where(
+                Match.is_token_match.is_(True),
+                Match.token_spender_id == athlete_id,
+                Event.season == season,
+            )
+        )
+
+        if exclude_match_id is not None:
+            stmt = stmt.where(Match.id != exclude_match_id)
+
+        used_tokens = session.execute(stmt).scalar_one()
+        remaining = int(athlete.token_budget) - int(used_tokens or 0)
+        return max(0, remaining)
     finally:
         session.close()
 
@@ -136,6 +173,12 @@ def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:
                         f"Peso non valido per l'atleta ID {athlete_id}: {default_weight}"
                     )
 
+                token_budget = int(row["Token budget"])
+                if token_budget < 0:
+                    raise ValueError(
+                        f"Budget token non valido per l'atleta ID {athlete_id}: {token_budget}"
+                    )
+
                 athlete.first_name = first_name
                 athlete.last_name = _clean_optional_text(row.get("Cognome"))
                 athlete.nickname = _clean_optional_text(row.get("Nickname"))
@@ -145,6 +188,7 @@ def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:
                 athlete.style = style
                 athlete.level = level
                 athlete.default_weight = default_weight
+                athlete.token_budget = token_budget
                 athlete.active = bool(row.get("Attivo", True))
 
                 updated_count += 1
