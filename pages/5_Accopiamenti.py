@@ -4,15 +4,16 @@ import pandas as pd
 import streamlit as st
 
 from src.athletes import list_athletes
+from src.db_runtime import bootstrap_database_from_state
 from src.events import list_events
 from src.levels import get_level_label
 from src.matches import list_matches
+from src.matchmaking_probability_ui import build_win_probability_columns
 from src.pairing import (
     calculate_age,
     generate_candidate_pairs,
     select_greedy_pairings,
 )
-from src.db_runtime import bootstrap_database_from_state
 
 bootstrap_database_from_state()
 
@@ -224,6 +225,10 @@ show_advanced = st.checkbox(
 )
 
 st.subheader("Accoppiamenti suggeriti")
+st.caption(
+    "Le colonne 'Prob. A (%)' e 'Prob. B (%)' derivano dal rating Elo e indicano chi è favorito; "
+    "l’indice mismatch invece misura quanto l’accoppiamento è equilibrato."
+)
 
 if not selected_pairs:
     st.info("Nessun accoppiamento selezionabile.")
@@ -244,10 +249,31 @@ else:
                 "Δ età": pair["age_diff"],
                 "Storico": pair["previous_matches_label"],
                 "Indice mismatch": pair["mismatch_index"],
+                "rating_a": pair["rating_a"],
+                "rating_b": pair["rating_b"],
             }
         )
 
-    st.dataframe(pd.DataFrame(selected_rows), use_container_width=True, hide_index=True)
+    selected_df = pd.DataFrame(selected_rows)
+    selected_df = build_win_probability_columns(selected_df)
+
+    display_selected_df = selected_df[
+        [
+            "Atleta A",
+            "Atleta B",
+            "Stile",
+            "Δ peso",
+            "Δ level",
+            "Δ rating",
+            "Δ età",
+            "Storico",
+            "Prob. A (%)",
+            "Prob. B (%)",
+            "Indice mismatch",
+        ]
+    ]
+
+    st.dataframe(display_selected_df, use_container_width=True, hide_index=True)
 
 if show_advanced:
     st.subheader("Tutte le coppie candidate")
@@ -281,10 +307,44 @@ if show_advanced:
                 "Comp. età": pair["age_component"],
                 "Pen. rematch": pair["rematch_penalty"],
                 "Indice mismatch": pair["mismatch_index"],
+                "rating_a": pair["rating_a"],
+                "rating_b": pair["rating_b"],
             }
         )
 
-    st.dataframe(pd.DataFrame(candidate_rows), use_container_width=True, hide_index=True)
+    candidate_df = pd.DataFrame(candidate_rows)
+    candidate_df = build_win_probability_columns(candidate_df)
+
+    display_candidate_df = candidate_df[
+        [
+            "Atleta A",
+            "Atleta B",
+            "Stile",
+            "Peso A",
+            "Peso B",
+            "Level A",
+            "Level B",
+            "Rating A",
+            "Rating B",
+            "Età A",
+            "Età B",
+            "Δ peso",
+            "Δ level",
+            "Δ rating",
+            "Δ età",
+            "Storico",
+            "Prob. A (%)",
+            "Prob. B (%)",
+            "Comp. peso",
+            "Comp. level",
+            "Comp. rating",
+            "Comp. età",
+            "Pen. rematch",
+            "Indice mismatch",
+        ]
+    ]
+
+    st.dataframe(display_candidate_df, use_container_width=True, hide_index=True)
 
     st.subheader("Atleti senza accoppiamento")
 
