@@ -12,6 +12,8 @@ from src.events import (
     derive_season_from_date,
 )
 
+EVENTS_UPDATE_SUCCESS_KEY = "events_update_success_message"
+
 bootstrap_database_from_state()
 
 st.title("Eventi / Giornate")
@@ -96,9 +98,15 @@ else:
                 for row in edited_df.to_dict(orient="records")
             ]
             updated_count = update_events_from_rows(rows)
-            st.success(f"Modifiche salvate correttamente ({updated_count} eventi aggiornati).")
+            st.session_state[EVENTS_UPDATE_SUCCESS_KEY] = (
+                f"Modifiche salvate correttamente ({updated_count} eventi aggiornati)."
+            )
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
         except Exception as exc:
             st.error(f"Errore durante il salvataggio: {exc}")
+
+    events_update_success_message = st.session_state.pop(EVENTS_UPDATE_SUCCESS_KEY, None)
+    if events_update_success_message:
+        st.success(events_update_success_message)

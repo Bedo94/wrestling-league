@@ -33,12 +33,25 @@ DB_ENV_LEAGUE_REMOTE = "league_remote"
 DB_ENV_TEST_LOCAL = "test_local"
 DB_ENV_TEST_REMOTE = "test_remote"
 
+DB_ENV_OPTIONS = (
+    DB_ENV_LEAGUE_LOCAL,
+    DB_ENV_LEAGUE_REMOTE,
+    DB_ENV_TEST_LOCAL,
+    DB_ENV_TEST_REMOTE,
+)
+
 DB_ENV_LABELS = {
     DB_ENV_LEAGUE_LOCAL: "League local",
     DB_ENV_LEAGUE_REMOTE: "League remote",
     DB_ENV_TEST_LOCAL: "Test local",
     DB_ENV_TEST_REMOTE: "Test remote",
 }
+
+DB_CONTEXT_LEAGUE = "league"
+DB_CONTEXT_TEST = "test"
+
+DB_LOCATION_LOCAL = "local"
+DB_LOCATION_REMOTE = "remote"
 
 STATE_DB_MODE = "db_mode"
 STATE_SQLITE_PATH = "db_sqlite_path"
@@ -109,6 +122,119 @@ def save_uploaded_sqlite_file(uploaded_file) -> Path:
         output_file.write(uploaded_file.getbuffer())
 
     return destination
+
+
+def is_test_environment(environment_name: str) -> bool:
+    return environment_name in {DB_ENV_TEST_LOCAL, DB_ENV_TEST_REMOTE}
+
+
+def is_league_environment(environment_name: str) -> bool:
+    return environment_name in {DB_ENV_LEAGUE_LOCAL, DB_ENV_LEAGUE_REMOTE}
+
+
+def is_local_environment(environment_name: str) -> bool:
+    return environment_name in {DB_ENV_LEAGUE_LOCAL, DB_ENV_TEST_LOCAL}
+
+
+def is_remote_environment(environment_name: str) -> bool:
+    return environment_name in {DB_ENV_LEAGUE_REMOTE, DB_ENV_TEST_REMOTE}
+
+
+def get_environment_context(environment_name: str) -> str:
+    if is_test_environment(environment_name):
+        return DB_CONTEXT_TEST
+    return DB_CONTEXT_LEAGUE
+
+
+def get_environment_location(environment_name: str) -> str:
+    if is_local_environment(environment_name):
+        return DB_LOCATION_LOCAL
+    return DB_LOCATION_REMOTE
+
+
+def build_environment_name(context: str, location: str) -> str:
+    context = (context or "").strip().lower()
+    location = (location or "").strip().lower()
+
+    if context == DB_CONTEXT_LEAGUE and location == DB_LOCATION_LOCAL:
+        return DB_ENV_LEAGUE_LOCAL
+    if context == DB_CONTEXT_LEAGUE and location == DB_LOCATION_REMOTE:
+        return DB_ENV_LEAGUE_REMOTE
+    if context == DB_CONTEXT_TEST and location == DB_LOCATION_LOCAL:
+        return DB_ENV_TEST_LOCAL
+    if context == DB_CONTEXT_TEST and location == DB_LOCATION_REMOTE:
+        return DB_ENV_TEST_REMOTE
+
+    raise ValueError(f"Combinazione ambiente non valida: {context=} {location=}")
+
+
+def get_environment_description(environment_name: str) -> str:
+    descriptions = {
+        DB_ENV_LEAGUE_LOCAL: (
+            "Ambiente ufficiale locale. Utile come copia offline/backup operativo "
+            "del database ufficiale."
+        ),
+        DB_ENV_LEAGUE_REMOTE: (
+            "Ambiente ufficiale remoto. È la fonte di verità dei dati reali."
+        ),
+        DB_ENV_TEST_LOCAL: (
+            "Ambiente di test locale. Serve per prove personali senza toccare "
+            "i dati ufficiali."
+        ),
+        DB_ENV_TEST_REMOTE: (
+            "Ambiente di test remoto. Serve per prove condivise senza toccare "
+            "i dati ufficiali."
+        ),
+    }
+    return descriptions.get(environment_name, "")
+
+
+def can_sync_between_environments(source_environment: str, target_environment: str) -> bool:
+    """
+    Regola attuale:
+    - consentito solo tra ambienti della stessa famiglia
+      * league_local <-> league_remote
+      * test_local <-> test_remote
+    - mai consentito tra test_* e league_*
+    - mai consentito verso sé stesso
+    """
+    if source_environment == target_environment:
+        return False
+
+    allowed_pairs = {
+        frozenset({DB_ENV_LEAGUE_LOCAL, DB_ENV_LEAGUE_REMOTE}),
+        frozenset({DB_ENV_TEST_LOCAL, DB_ENV_TEST_REMOTE}),
+    }
+
+    return frozenset({source_environment, target_environment}) in allowed_pairs
+
+
+def get_sync_policy_message(source_environment: str, target_environment: str) -> str:
+    if source_environment == target_environment:
+        return "Nessuna sincronizzazione necessaria: ambiente identico."
+
+    if can_sync_between_environments(source_environment, target_environment):
+        return "Sincronizzazione consentita."
+
+    if (
+        is_test_environment(source_environment) and is_league_environment(target_environment)
+    ) or (
+        is_league_environment(source_environment) and is_test_environment(target_environment)
+    ):
+        return (
+            "Sincronizzazione NON consentita: gli ambienti di test non possono "
+            "essere sincronizzati con quelli ufficiali."
+        )
+
+    return "Sincronizzazione NON consentita per questa combinazione di ambienti."
+
+
+def list_sync_compatible_targets(source_environment: str) -> list[str]:
+    return [
+        environment_name
+        for environment_name in DB_ENV_OPTIONS
+        if can_sync_between_environments(source_environment, environment_name)
+    ]
 
 
 def _infer_initial_state() -> tuple[str, str, str, str]:
@@ -259,6 +385,7 @@ def _apply_database(
             "mode_label": DB_MODE_LABELS[mode],
             "environment_name": environment_name,
             "environment_label": DB_ENV_LABELS[environment_name],
+            "environment_description": get_environment_description(environment_name),
             "label": str(resolved_path),
             "database_url": get_database_url(hide_password=False),
             "database_url_masked": get_database_url(hide_password=True),
@@ -289,6 +416,7 @@ def _apply_database(
             "mode_label": DB_MODE_LABELS[mode],
             "environment_name": environment_name,
             "environment_label": DB_ENV_LABELS[environment_name],
+            "environment_description": get_environment_description(environment_name),
             "label": DB_ENV_LABELS[environment_name],
             "database_url": get_database_url(hide_password=False),
             "database_url_masked": get_database_url(hide_password=True),

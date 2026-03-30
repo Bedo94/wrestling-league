@@ -17,6 +17,8 @@ from src.ratings import recompute_ratings
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
 from src.settings import TOKEN_SETTINGS
 
+ATHLETES_UPDATE_SUCCESS_KEY = "athletes_update_success_message"
+
 bootstrap_database_from_state()
 
 st.title("Atleti")
@@ -230,9 +232,15 @@ else:
 
             updated_count = update_athletes_from_rows(rows)
             recompute_ratings()
-            st.success(f"Modifiche salvate correttamente ({updated_count} atleti aggiornati).")
+            st.session_state[ATHLETES_UPDATE_SUCCESS_KEY] = (
+                f"Modifiche salvate correttamente ({updated_count} atleti aggiornati)."
+            )
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
         except Exception as exc:
             st.error(f"Errore durante il salvataggio: {exc}")
+
+    athletes_update_success_message = st.session_state.pop(ATHLETES_UPDATE_SUCCESS_KEY, None)
+    if athletes_update_success_message:
+        st.success(athletes_update_success_message)

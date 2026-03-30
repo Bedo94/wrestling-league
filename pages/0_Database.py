@@ -2,11 +2,12 @@ import streamlit as st
 
 from src.database import DEFAULT_DB_PATH
 from src.db_runtime import (
+    DB_CONTEXT_LEAGUE,
+    DB_CONTEXT_TEST,
     DB_ENV_LABELS,
-    DB_ENV_LEAGUE_LOCAL,
-    DB_ENV_LEAGUE_REMOTE,
-    DB_ENV_TEST_LOCAL,
-    DB_ENV_TEST_REMOTE,
+    DB_ENV_OPTIONS,
+    DB_LOCATION_LOCAL,
+    DB_LOCATION_REMOTE,
     DB_MODE_POSTGRES,
     DB_MODE_SQLITE,
     DEFAULT_TEST_DB_PATH,
@@ -15,9 +16,17 @@ from src.db_runtime import (
     STATE_TEST_LOCAL_PATH,
     STATE_TEST_REMOTE_URL,
     bootstrap_database_from_state,
+    build_environment_name,
     build_uploaded_sqlite_destination,
+    can_sync_between_environments,
     get_active_database_info,
+    get_environment_context,
+    get_environment_description,
+    get_environment_location,
     get_selected_environment_name,
+    get_sync_policy_message,
+    is_local_environment,
+    list_sync_compatible_targets,
     save_uploaded_sqlite_file,
     set_database_selection,
 )
@@ -28,27 +37,43 @@ from src.export_service import (
     export_active_database_to_sqlite_bytes,
 )
 
-ENVIRONMENT_OPTIONS = (
-    DB_ENV_LEAGUE_LOCAL,
-    DB_ENV_LEAGUE_REMOTE,
-    DB_ENV_TEST_LOCAL,
-    DB_ENV_TEST_REMOTE,
+CONTEXT_OPTIONS = (
+    DB_CONTEXT_LEAGUE,
+    DB_CONTEXT_TEST,
 )
 
+CONTEXT_LABELS = {
+    DB_CONTEXT_LEAGUE: "Ufficiale",
+    DB_CONTEXT_TEST: "Test",
+}
 
-def get_environment_index(environment_name: str) -> int:
+LOCATION_OPTIONS = (
+    DB_LOCATION_LOCAL,
+    DB_LOCATION_REMOTE,
+)
+
+LOCATION_LABELS = {
+    DB_LOCATION_LOCAL: "Locale",
+    DB_LOCATION_REMOTE: "Remoto",
+}
+
+
+def get_context_index(context: str) -> int:
     try:
-        return ENVIRONMENT_OPTIONS.index(environment_name)
+        return CONTEXT_OPTIONS.index(context)
     except ValueError:
         return 0
 
 
-def is_local_environment(environment_name: str) -> bool:
-    return environment_name in {DB_ENV_LEAGUE_LOCAL, DB_ENV_TEST_LOCAL}
+def get_location_index(location: str) -> int:
+    try:
+        return LOCATION_OPTIONS.index(location)
+    except ValueError:
+        return 0
 
 
 def get_environment_sqlite_path(environment_name: str) -> str:
-    if environment_name == DB_ENV_TEST_LOCAL:
+    if environment_name == "test_local":
         return st.session_state.get(
             STATE_TEST_LOCAL_PATH,
             str(DEFAULT_TEST_DB_PATH.resolve()),
@@ -61,7 +86,7 @@ def get_environment_sqlite_path(environment_name: str) -> str:
 
 
 def get_environment_postgres_url(environment_name: str) -> str:
-    if environment_name == DB_ENV_TEST_REMOTE:
+    if environment_name == "test_remote":
         return st.session_state.get(STATE_TEST_REMOTE_URL, "")
 
     return st.session_state.get(STATE_LEAGUE_REMOTE_URL, "")
@@ -69,6 +94,7 @@ def get_environment_postgres_url(environment_name: str) -> str:
 
 bootstrap_database_from_state()
 active_db = get_active_database_info()
+active_environment = active_db["environment_name"]
 
 st.title("Database")
 st.caption("Questa pagina decide quale database usa tutta l'applicazione.")
@@ -80,12 +106,30 @@ if not can_edit_database:
     st.info("La modifica del database è riservata agli admin.")
 
 st.markdown("## Database attivo")
-st.write(f"Ambiente: **{active_db.get('environment_label', active_db['mode_label'])}**")
+st.write(f"Ambiente: **{active_db['environment_label']}**")
 st.write(f"Backend: **{active_db['mode_label']}**")
 st.code(active_db["database_url_masked"])
 
 if active_db["sqlite_path"]:
     st.caption(f"File SQLite attivo: {active_db['sqlite_path']}")
+
+environment_description = active_db.get(
+    "environment_description",
+    get_environment_description(active_environment),
+)
+
+if get_environment_context(active_environment) == DB_CONTEXT_TEST:
+    st.warning(
+        "Stai lavorando su un ambiente di test. "
+        "I dati NON sono ufficiali e non devono essere sincronizzati con gli ambienti league_*."
+    )
+else:
+    st.success(
+        "Stai lavorando su un ambiente ufficiale. "
+        "Usalo solo per dati reali o copie operative ufficiali."
+    )
+
+st.caption(environment_description)
 
 st.markdown("## Download")
 
@@ -131,15 +175,40 @@ if not can_download_database:
 
 st.markdown("## Configurazione")
 
-selected_environment = st.radio(
-    "Scegli l'ambiente",
-    options=ENVIRONMENT_OPTIONS,
-    index=get_environment_index(get_selected_environment_name()),
-    format_func=lambda value: DB_ENV_LABELS[value],
+selected_context = st.radio(
+    "Contesto",
+    options=CONTEXT_OPTIONS,
+    index=get_context_index(get_environment_context(get_selected_environment_name())),
+    format_func=lambda value: CONTEXT_LABELS[value],
+    horizontal=True,
     disabled=not can_edit_database,
 )
 
+selected_location = st.radio(
+    "Posizione",
+    options=LOCATION_OPTIONS,
+    index=get_location_index(get_environment_location(get_selected_environment_name())),
+    format_func=lambda value: LOCATION_LABELS[value],
+    horizontal=True,
+    disabled=not can_edit_database,
+)
+
+selected_environment = build_environment_name(selected_context, selected_location)
 selected_mode = DB_MODE_SQLITE if is_local_environment(selected_environment) else DB_MODE_POSTGRES
+
+st.caption(f"Ambiente selezionato: **{DB_ENV_LABELS[selected_environment]}**")
+st.caption(get_environment_description(selected_environment))
+
+if selected_context == DB_CONTEXT_TEST:
+    st.warning(
+        "Ambiente di test: qualsiasi futura sincronizzazione verso ambienti ufficiali "
+        "sarà bloccata."
+    )
+else:
+    st.info(
+        "Ambiente ufficiale: usa questa modalità solo per dati reali o copie operative ufficiali."
+    )
+
 uploaded_sqlite_file = None
 sqlite_path = ""
 postgres_url = ""
@@ -147,22 +216,15 @@ postgres_url = ""
 if selected_mode == DB_MODE_SQLITE:
     default_path = (
         DEFAULT_TEST_DB_PATH.resolve()
-        if selected_environment == DB_ENV_TEST_LOCAL
+        if selected_environment == "test_local"
         else DEFAULT_DB_PATH.resolve()
     )
 
     st.markdown("### SQLite locale")
-
-    if selected_environment == DB_ENV_TEST_LOCAL:
-        st.info(
-            f"Ambiente di test locale. Path di default: {default_path} "
-            "(se il file non esiste, verrà creato automaticamente)."
-        )
-    else:
-        st.info(
-            f"Ambiente ufficiale locale. Path di default: {default_path} "
-            "(se il file non esiste, verrà creato automaticamente)."
-        )
+    st.info(
+        f"Path di default: {default_path} "
+        "(se il file non esiste, verrà creato automaticamente)."
+    )
 
     sqlite_path = st.text_input(
         "Percorso file .db",
@@ -188,12 +250,6 @@ if selected_mode == DB_MODE_SQLITE:
 
 else:
     st.markdown("### PostgreSQL remoto")
-
-    if selected_environment == DB_ENV_TEST_REMOTE:
-        st.info("Ambiente remoto di test.")
-    else:
-        st.info("Ambiente remoto ufficiale.")
-
     postgres_url = st.text_input(
         "DATABASE_URL PostgreSQL",
         value=get_environment_postgres_url(selected_environment),
@@ -222,3 +278,31 @@ if st.button("Applica configurazione", use_container_width=True, disabled=not ca
 
     except Exception as exc:
         st.error(f"Errore durante la configurazione del database: {exc}")
+
+st.markdown("## Regole di sincronizzazione")
+
+compatible_targets = list_sync_compatible_targets(active_environment)
+
+if compatible_targets:
+    st.success(
+        "Target compatibili con l'ambiente attivo: "
+        + ", ".join(DB_ENV_LABELS[target] for target in compatible_targets)
+    )
+else:
+    st.warning("Nessun target di sincronizzazione compatibile con l'ambiente attivo.")
+
+for target_environment in DB_ENV_OPTIONS:
+    if target_environment == active_environment:
+        continue
+
+    allowed = can_sync_between_environments(active_environment, target_environment)
+    icon = "✅" if allowed else "🚫"
+    st.write(
+        f"{icon} **{DB_ENV_LABELS[target_environment]}** — "
+        f"{get_sync_policy_message(active_environment, target_environment)}"
+    )
+
+st.caption(
+    "Questa regola è centralizzata in src/db_runtime.py. "
+    "Quando implementerai la sync vera, dovrà usare la stessa policy."
+)

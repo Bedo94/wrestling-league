@@ -273,16 +273,25 @@ def render_rankings_panel(
         st.warning("Nessun atleta corrisponde ai filtri selezionati.")
         return
 
-    filtered_df = filtered_df.sort_values(
-        by=[
-            "class_points_total",
-            "wins",
-            "technical_diff",
-            "technical_points_for",
-            "name",
-        ],
-        ascending=[False, False, False, False, True],
-    ).reset_index(drop=True)
+    if filtered_df["matches"].sum() == 0:
+        filtered_df = filtered_df.sort_values(
+            by=[
+                "rating",
+                "name",
+            ],
+            ascending=[False, True],
+        ).reset_index(drop=True)
+    else:
+        filtered_df = filtered_df.sort_values(
+            by=[
+                "class_points_total",
+                "wins",
+                "technical_diff",
+                "technical_points_for",
+                "name",
+            ],
+            ascending=[False, False, False, False, True],
+        ).reset_index(drop=True)
 
     filtered_df["Posizione"] = filtered_df.index + 1
     filtered_df["Rating"] = filtered_df["rating"].apply(
@@ -402,6 +411,11 @@ def render_rankings_panel(
                 hide_index=True,
             )
 
-    st.caption(
-        "Ordinamento: punti classifica, poi vittorie, poi differenza punti tecnici, poi punti fatti."
-    )
+    if filtered_df["matches"].sum() == 0:
+        st.caption(
+            "Ordinamento: in assenza di incontri, rating iniziale; a parità, nome."
+        )
+    else:
+        st.caption(
+            "Ordinamento: punti classifica, poi vittorie, poi differenza punti tecnici, poi punti fatti."
+        )
