@@ -35,8 +35,12 @@ Questa applicazione servirà a gestire:
 
 st.markdown("## Stato progetto")
 
+st.success(
+    f"Ambiente attivo: {active_db.get('environment_label', active_db['mode_label'])}"
+)
+st.caption(f"Backend: {active_db['mode_label']}")
+
 if active_db["mode"] == DB_MODE_POSTGRES:
-    st.success("Database attivo: PostgreSQL")
     st.caption(active_db["database_url_masked"])
 else:
     db_path = Path(active_db["sqlite_path"])

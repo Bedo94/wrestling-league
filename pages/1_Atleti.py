@@ -37,6 +37,9 @@ level_labels = get_level_labels()
 if "athlete_form_level_label" not in st.session_state:
     st.session_state["athlete_form_level_label"] = level_labels[0]
 
+if st.session_state.pop("reset_athlete_form_level_label", False):
+    st.session_state["athlete_form_level_label"] = level_labels[0]
+
 st.subheader("Aggiungi atleta")
 
 with st.expander("Assistente livello consigliato (opzionale)", expanded=False):
@@ -46,7 +49,7 @@ with st.expander("Assistente livello consigliato (opzionale)", expanded=False):
         apply_target_session_key="athlete_form_level_label",
         apply_button_label="Usa livello consigliato nel form",
     )
-    
+
 team_options = list_teams()
 
 with st.form("athlete_form", clear_on_submit=True):
@@ -126,7 +129,7 @@ with st.form("athlete_form", clear_on_submit=True):
             )
             recompute_ratings()
 
-            st.session_state["athlete_form_level_label"] = level_labels[0]
+            st.session_state["reset_athlete_form_level_label"] = True
 
             st.success(
                 f"Atleta salvato: {athlete.first_name} "

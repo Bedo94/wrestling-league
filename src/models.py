@@ -1,7 +1,18 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
+import uuid
 
-from sqlalchemy import Boolean, Date, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database import Base
@@ -32,6 +43,35 @@ class Athlete(Base):
         default=TOKEN_SETTINGS["default_token_budget_per_season"],
     )
 
+    # Metadati minimi per sync / merge / concorrenza
+    sync_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    version_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    __mapper_args__ = {
+        "version_id_col": version_id,
+    }
+
 
 class Event(Base):
     __tablename__ = "events"
@@ -45,6 +85,35 @@ class Event(Base):
         default=lambda: str(date.today().year),
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Metadati minimi per sync / merge / concorrenza
+    sync_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    version_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    __mapper_args__ = {
+        "version_id_col": version_id,
+    }
 
 
 class Match(Base):
@@ -87,6 +156,58 @@ class Match(Base):
 
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Riferimenti logici per sync cross-database
+    # Tengo naming coerente con la struttura attuale (a/b) invece di red/blue
+    event_sync_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+    athlete_a_sync_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+    athlete_b_sync_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+    winner_sync_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+
+    # Metadati minimi per sync / merge / concorrenza
+    sync_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    version_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    __mapper_args__ = {
+        "version_id_col": version_id,
+    }
+
 
 class FormulaParameter(Base):
     """
@@ -103,4 +224,132 @@ class FormulaParameter(Base):
     key: Mapped[str] = mapped_column(String(100), nullable=False)
     value: Mapped[str] = mapped_column(String(100), nullable=False)
     value_type: Mapped[str] = mapped_column(String(20), nullable=False, default="float")
-    updated_at: Mapped[date] = mapped_column(Date, nullable=False, default=date.today())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Metadati minimi per sync / merge / concorrenza
+    sync_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    version_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    __mapper_args__ = {
+        "version_id_col": version_id,
+    }
+
+
+class FormulaVersion(Base):
+    """
+    Versione pubblicabile di una formula/configurazione.
+    Serve per storicizzare i parametri usati nei ricalcoli.
+    """
+
+    __tablename__ = "formula_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    config_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    sync_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    version_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    __mapper_args__ = {
+        "version_id_col": version_id,
+    }
+
+
+class CalculationRun(Base):
+    """
+    Traccia un ricalcolo eseguito su un certo ambiente e scope.
+    """
+
+    __tablename__ = "calculation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    formula_version_id: Mapped[int] = mapped_column(
+        ForeignKey("formula_versions.id"),
+        nullable=False,
+    )
+    environment_name: Mapped[str] = mapped_column(String(30), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False, default="all")
+    scope_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    started_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    sync_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    version_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+
+    __mapper_args__ = {
+        "version_id_col": version_id,
+    }

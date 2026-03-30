@@ -1,10 +1,11 @@
-from datetime import date
-from typing import Any, Dict
+from datetime import datetime
+import json
+from typing import Any, Dict, Optional
 
 from sqlalchemy import select
 
 from src.database import get_session
-from src.models import FormulaParameter
+from src.models import CalculationRun, FormulaParameter, FormulaVersion
 from src.settings import (
     SCORING_SETTINGS,
     MATCHMAKING_SETTINGS,
@@ -28,7 +29,6 @@ def parse_value(raw_value: str, value_type: str | None = None) -> Any:
         return int(raw_value)
     if t == "str":
         return raw_value
-    # default to float
     return float(raw_value)
 
 
@@ -55,6 +55,7 @@ def load_config() -> None:
             value = parse_value(param.value, param.value_type)
             group = param.group_name
             key = param.key
+
             if group == "scoring" and key in SCORING_SETTINGS:
                 SCORING_SETTINGS[key] = value
             elif group == "matchmaking" and key in MATCHMAKING_SETTINGS:
@@ -64,7 +65,7 @@ def load_config() -> None:
             elif group == "team_ranking" and key in TEAM_RANKING_SETTINGS:
                 TEAM_RANKING_SETTINGS[key] = value
             elif group == "level_evaluation" and key in LEVEL_EVALUATION_SETTINGS:
-                LEVEL_EVALUATION_SETTINGS[key] = value            
+                LEVEL_EVALUATION_SETTINGS[key] = value
     finally:
         session.close()
 
@@ -122,7 +123,6 @@ def save_parameters(values: Dict[str, Dict[str, Any]]) -> None:
     try:
         for group, params in values.items():
             for key, value in params.items():
-                # infer type based on value instance
                 if isinstance(value, bool):
                     value_type = "bool"
                 elif isinstance(value, int) and not isinstance(value, bool):
@@ -131,13 +131,16 @@ def save_parameters(values: Dict[str, Dict[str, Any]]) -> None:
                     value_type = "float"
                 else:
                     value_type = "str"
+
                 value_str = str(value)
+
                 existing: FormulaParameter | None = session.scalar(
                     select(FormulaParameter).where(
                         FormulaParameter.group_name == group,
                         FormulaParameter.key == key,
                     )
                 )
+
                 if existing:
                     existing.value = value_str
                     existing.value_type = value_type
@@ -150,10 +153,11 @@ def save_parameters(values: Dict[str, Dict[str, Any]]) -> None:
                             value_type=value_type,
                         )
                     )
+
         session.commit()
     finally:
         session.close()
-    # reload dictionaries in src.settings so that live values are applied
+
     load_config()
 
 
@@ -168,7 +172,7 @@ def reset_to_defaults() -> None:
         session.commit()
     finally:
         session.close()
-    # reload default dictionaries
+
     load_config()
 
 
@@ -191,3 +195,193 @@ def reset_group_to_defaults(group: str) -> None:
         session.close()
 
     load_config()
+
+
+# -------------------------------------------------------------------
+# Formula versioning helpers
+# -------------------------------------------------------------------
+
+def _serialize_config(config: dict[str, Any]) -> str:
+    return json.dumps(config, ensure_ascii=False, sort_keys=True)
+
+
+def _deserialize_config(raw_value: str) -> dict[str, Any]:
+    data = json.loads(raw_value)
+    if isinstance(data, dict):
+        return data
+    raise ValueError("config_json non contiene un oggetto JSON valido.")
+
+
+def get_current_group_config(group: str) -> dict[str, Any]:
+    return get_full_config().get(group, {}).copy()
+
+
+def get_next_formula_version_number(group: str) -> int:
+    session = get_session()
+    try:
+        latest = session.scalar(
+            select(FormulaVersion)
+            .where(FormulaVersion.group_name == group)
+            .order_by(FormulaVersion.version_number.desc())
+        )
+        if latest is None:
+            return 1
+        return int(latest.version_number) + 1
+    finally:
+        session.close()
+
+
+def list_formula_versions(
+    group: Optional[str] = None,
+    status: Optional[str] = None,
+) -> list[FormulaVersion]:
+    session = get_session()
+    try:
+        stmt = select(FormulaVersion)
+
+        if group:
+            stmt = stmt.where(FormulaVersion.group_name == group)
+
+        if status:
+            stmt = stmt.where(FormulaVersion.status == status)
+
+        stmt = stmt.order_by(
+            FormulaVersion.group_name.asc(),
+            FormulaVersion.version_number.desc(),
+        )
+
+        return list(session.scalars(stmt).all())
+    finally:
+        session.close()
+
+
+def get_formula_version_by_id(formula_version_id: int) -> Optional[FormulaVersion]:
+    session = get_session()
+    try:
+        return session.get(FormulaVersion, formula_version_id)
+    finally:
+        session.close()
+
+
+def get_formula_version_config(formula_version_id: int) -> dict[str, Any]:
+    session = get_session()
+    try:
+        formula_version = session.get(FormulaVersion, formula_version_id)
+        if formula_version is None:
+            raise ValueError(f"FormulaVersion non trovata: id={formula_version_id}")
+        return _deserialize_config(formula_version.config_json)
+    finally:
+        session.close()
+
+
+def get_latest_published_formula_version(group: str) -> Optional[FormulaVersion]:
+    session = get_session()
+    try:
+        return session.scalar(
+            select(FormulaVersion)
+            .where(
+                FormulaVersion.group_name == group,
+                FormulaVersion.status == "published",
+            )
+            .order_by(FormulaVersion.version_number.desc())
+        )
+    finally:
+        session.close()
+
+
+def create_formula_version(
+    *,
+    group: str,
+    config: Optional[dict[str, Any]] = None,
+    label: Optional[str] = None,
+    publish: bool = False,
+) -> FormulaVersion:
+    """
+    Create a new version of a formula group using either the provided config
+    or the current live config loaded from FormulaParameter.
+    """
+    session = get_session()
+    try:
+        version_number = get_next_formula_version_number(group)
+        effective_config = config if config is not None else get_current_group_config(group)
+
+        if publish:
+            published_versions = session.scalars(
+                select(FormulaVersion).where(
+                    FormulaVersion.group_name == group,
+                    FormulaVersion.status == "published",
+                )
+            ).all()
+            for existing in published_versions:
+                existing.status = "archived"
+
+        formula_version = FormulaVersion(
+            group_name=group,
+            version_number=version_number,
+            label=label or f"{group} v{version_number}",
+            config_json=_serialize_config(effective_config),
+            status="published" if publish else "draft",
+            published_at=datetime.utcnow() if publish else None,
+        )
+
+        session.add(formula_version)
+        session.commit()
+        session.refresh(formula_version)
+        return formula_version
+    finally:
+        session.close()
+
+
+# -------------------------------------------------------------------
+# Calculation run helpers
+# -------------------------------------------------------------------
+
+def start_calculation_run(
+    *,
+    formula_version_id: int,
+    environment_name: str,
+    scope_type: str = "all",
+    scope_reference: Optional[str] = None,
+    started_by: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> CalculationRun:
+    session = get_session()
+    try:
+        calculation_run = CalculationRun(
+            formula_version_id=formula_version_id,
+            environment_name=environment_name,
+            scope_type=scope_type,
+            scope_reference=scope_reference,
+            status="running",
+            started_by=started_by,
+            notes=notes,
+        )
+        session.add(calculation_run)
+        session.commit()
+        session.refresh(calculation_run)
+        return calculation_run
+    finally:
+        session.close()
+
+
+def finish_calculation_run(
+    run_id: int,
+    *,
+    status: str = "completed",
+    notes: Optional[str] = None,
+) -> None:
+    session = get_session()
+    try:
+        calculation_run = session.get(CalculationRun, run_id)
+        if calculation_run is None:
+            raise ValueError(f"CalculationRun non trovata: id={run_id}")
+
+        calculation_run.status = status
+        calculation_run.finished_at = datetime.utcnow()
+
+        if notes is not None:
+            calculation_run.notes = notes
+
+        session.commit()
+    finally:
+        session.close()
