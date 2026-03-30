@@ -1,39 +1,36 @@
-# Wrestling League – Project Index
+# Indice dei documenti ChatGPT
 
-## Fonte del codice
+Questa cartella contiene documenti destinati a **ChatGPT** per aiutarlo a comprendere
+la struttura del progetto e a generare risposte contestuali durante lo sviluppo.
+Questi file non sono pensati per gli utenti finali, ma come guida per l’assistente.
 
-Il codice sorgente del progetto è mantenuto su GitHub.
+## Come utilizzare questi file
 
-👉 Questa è la fonte di verità del codice  
-👉 Le modifiche devono sempre essere applicate alla repository
+* I file in `docs/` sono la documentazione tecnica del progetto e vengono
+  condivisi con gli sviluppatori e gli utenti esperti.
+* I file in `docs/chatgpt/` servono invece a dare a ChatGPT il contesto
+  necessario a rispondere correttamente alle domande su questa repository.
+* Quando apri una nuova chat su questo progetto, specifica sempre di usare
+  i file in `docs/chatgpt/` come fonte di verità.
 
-## Uso con ChatGPT
+## Indice dei file
 
-ChatGPT NON contiene il codice completo.
+* **00_INDEX.md** – questo indice.
+* **01_idea_e_obiettivi.md** – descrizione dell’idea iniziale e degli obiettivi del progetto.
+* **02_stack_e_setup.md** – descrizione dello stack tecnologico e delle modalità di setup,
+  aggiornata per includere il supporto a PostgreSQL remoto e la possibilità di creare
+  un eseguibile locale o deploy in cloud.
+* **03_architettura.md** – struttura attuale del progetto con spiegazione dei moduli,
+  inclusi i nuovi componenti per la selezione del database e l’esportazione dei dati.
+* **04_scoring.md** – dettagli sulle formule di scoring, sui fattori di peso e bonus speciali.
+* **05_rating_dinamico.md** – descrizione del rating dinamico, con i seed iniziali
+  per livello e la formula Elo‑like utilizzata per gli aggiornamenti.
+* **06_matchmaking.md** – spiegazione dell’algoritmo di matchmaking e delle componenti
+  dell’indice di mismatch.
+* **09_roadmap_e_todo.md** – pianificazione delle attività e roadmap aggiornata.
+* **10_admin_e_configurazione_futura.md** – guida alla futura sezione amministrativa,
+  gestione utenti e configurazioni via UI.
 
-Quando lavori con ChatGPT:
-- fai sempre riferimento ai file presenti su GitHub
-- incolla i file rilevanti nella chat quando necessario
-- applica le modifiche localmente e poi push su GitHub
-
-## Documentazione
-
-Questi file servono per:
-- spiegare il progetto
-- guidare ChatGPT
-- facilitare la collaborazione
-
-# ChatGPT Integration
-
-Questa cartella contiene le istruzioni per usare ChatGPT nello sviluppo del progetto.
-
-## File
-
-- CHATGPT_WORKFLOW.md → come lavorare con ChatGPT
-- PROJECT_INSTRUCTIONS.md → istruzioni da incollare nel Project
-- START_NEW_CHAT_PROMPT.md → prompt iniziale per nuove chat
-
-## Nota
-
-Il codice sorgente NON è qui:
-👉 è nella repository GitHub
+Questi file verranno aggiornati via via che il progetto si evolve.  In caso di
+dubbio, consulta sempre il codice sorgente su GitHub e i documenti più recenti in
+`docs/`.

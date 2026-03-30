@@ -1,96 +1,84 @@
 # Roadmap e TODO
 
-Questo documento traccia lo stato di avanzamento del progetto e le attività
-previste. L'applicazione è una Web app Streamlit con database SQLite per la
-gestione di una lega di lotta. Alcune funzionalità sono già operative,
-altre sono in via di perfezionamento.
+L'applicazione è una Web app Streamlit che ora può lavorare sia con un database **SQLite locale** sia con un **PostgreSQL remoto**, grazie al meccanismo di selezione runtime in `pages/0_Database.py` e `src/db_runtime.py`. Alcune funzionalità sono già operative, altre sono in via di perfezionamento o pianificate.
 
 ## Già implementato
 
 - setup progetto Python / Streamlit
-- database SQLite con SQLAlchemy e creazione automatica all'avvio
+- database SQLite con SQLAlchemy e creazione automatica all’avvio
+- **supporto a database PostgreSQL remoto**, selezionabile tramite la pagina “Database” (con import/export di snapshot SQLite o Excel)
 - pagina atleti
 - pagina eventi
 - pagina incontri
 - scoring sperimentale
 - classifica aggregata
-- rating dinamico (Elo-like)
+- rating dinamico (Elo‑like)
 - matchmaking assistito
 - parametri centralizzati in `src/settings.py`
 
 ## Da rifinire a breve
 
-- **Taratura di ritiro e forfait**: il rating e lo scoring riducono già l'impatto
-  di questi match, ma i valori potrebbero essere ulteriormente calibrati.
-- **Interfaccia utente**: migliorare la selezione/scrittura del team, uniformare
-  i testi e rendere più chiare le pagine.
-- **Mostrare dettagli**: fornire un breakdown dei punti (weight factor,
-  performance bonus, ecc.) e dell'indice mismatch nella UI avanzata,
-  mantenendo la schermata principale snella.
-- **Pulizia codice**: separare meglio la logica di servizio dalla
-  presentazione e centralizzare eventuali controlli di business.
+- **Migliorare l’affidabilità del backend PostgreSQL** (gestione errori di connessione, supporto host/porta custom).
+- **Interfaccia utente**: uniformare testi e migliorare l’usabilità dopo l’introduzione della pagina Database.
+- **Taratura ritiro/forfait**: ulteriori calibrazioni per scoring e rating.
+- **Mostrare dettagli**: breakdown di weight factor, performance bonus e mismatch nella UI avanzata.
+- **Pulizia codice**: separare meglio la logica di servizio dalla presentazione.
 
 ## Prossimi step consigliati
 
-1. **Status degli incontri**: introdurre gli stati `scheduled` e `completed`.
-   Il matchmaking dovrebbe poter generare match programmati da confermare.
-2. **Editing degli incontri**: permettere di modificare gli incontri
-   esistenti (esito, punteggi, pesi, ecc.) tramite l'interfaccia.
-3. **Gestione team**: normalizzare la struttura delle squadre in tabella
-   dedicata e aggiungere filtri/ordinamenti per team.
-4. **Filtri classifica avanzati**: aggiungere filtri per categoria di peso,
-   periodo temporale, stile o fascia d'età.
-5. **Preset federali**: permettere di salvare e ricaricare configurazioni
-   di parametri in base alle categorie ufficiali.
-6. **Pagina admin parametri**: creare un'interfaccia Streamlit che consenta
-   di modificare `SCORING_SETTINGS`, `RATINGS_SETTINGS` e
-   `MATCHMAKING_SETTINGS` senza cambiare codice.
-7. **Documentazione utente**: separare la documentazione tecnica da
-   quella per gli utenti/allenatori, includendo una guida rapida.
-8. **Deployment condiviso**: predisporre il deploy dell'app su un
-   server pubblico (ad esempio su Heroku, Render o un VPS) con
-   database centralizzato.
-   - **Database PostgreSQL**: sostituire l'SQLite locale con un PostgreSQL
-     condiviso per consentire l'utilizzo multi‑utente tramite link.
-   - **Migrazione dati**: predisporre script di migrazione del database e
-     utilizzare SQLAlchemy per supportare entrambi i back‑end.
-   - **Sicurezza e autenticazione**: aggiungere un layer di autenticazione
-     per proteggere l'area amministrativa e i dati.
+1. **Gestione utenti e autenticazione**
+   - Implementare un sistema di login con tre ruoli principali:
+     - **Admin**: può configurare il backend, modificare parametri, esportare il database e gestire utenti.
+     - **Operatore gara**: può gestire atleti, eventi e match ma non modificare parametri globali o il backend.
+     - **Cliente/ospite**: può consultare classifiche e statistiche senza modificare i dati.
+   - Utilizzare un sistema di autenticazione (username/password, JWT, OAuth) e proteggere le pagine in base al ruolo.
+
+2. **Packaging locale**
+   - Preparare uno script di build con **PyInstaller** per creare un eseguibile (Windows/macOS/Linux). L’eseguibile deve poter leggere `DATABASE_URL` e configurare il backend tramite la pagina Database.
+
+3. **Deploy su cloud**
+   - Configurare un workflow di deployment (Heroku, Render, VPS o Docker) per pubblicare l’app. In questa modalità usare **solo PostgreSQL** e impostare le variabili d’ambiente `DATABASE_URL` e secret.
+   - Valutare l’uso di container Docker per standardizzare l’ambiente.
+
+4. **Gestione team avanzata**
+   - Normalizzare la struttura delle squadre in una tabella e aggiungere filtri/ordinamenti per team.
+
+5. **Status degli incontri**
+   - Introdurre gli stati `scheduled` e `completed` nel modello `Match` per gestire match programmati e giocati.
+
+6. **Editing degli incontri**
+   - Permettere la modifica di match esistenti (esito, punteggi, pesi) mantenendo lo storico.
+
+7. **Filtri classifica avanzati**
+   - Aggiungere filtri per peso, periodo temporale, stile o fascia d’età; introdurre classifiche pound‑for‑pound.
+
+8. **Preset federali e parametri**
+   - Salvare e ricaricare configurazioni di parametri (categorie U20, Senior, fasce di peso); creare una pagina admin per modificare `SCORING_SETTINGS`, `RATINGS_SETTINGS` e `MATCHMAKING_SETTINGS` salvando i valori nel database.
+
+9. **Documentazione utente**
+   - Separare la documentazione tecnica da quella per allenatori/utenti. Fornire una guida rapida su avvio, scelta del database, accesso (quando disponibile l’auth) e interpretazione delle classifiche.
 
 ## Evoluzioni di medio periodo
 
-- **Area admin protetta**: gestione degli utenti, diritti di modifica
-  parametri e ricalcolo globale dei punteggi.
-- **Parametri nel database**: spostare i dizionari di settings in una
-  tabella, con log delle modifiche (chi, quando, valore precedente e
-  nuovo).
-- **Versionamento e ricalcolo**: memorizzare la versione dei parametri
-  applicata a ciascun match e fornire una funzione per rigenerare i
-  punteggi quando cambiano le regole.
-- **Export e statistiche**: esportare i dati in CSV/PDF, generare
-  reportistica avanzata e statistiche (rating offensivo/difensivo,
-  progression chart, ecc.).
-- **Autenticazione utenti**: introdurre login per atleti, allenatori e
-  amministratori, eventualmente integrando sistemi OAuth o JWT.
+- **Area admin protetta**: gestione completa degli utenti, backup e ricalcolo globale.
+- **Parametri nel database**: spostare i dizionari di settings in tabelle con log delle modifiche.
+- **Versionamento e ricalcolo**: memorizzare la versione dei parametri per ogni match e fornire funzioni di ricalcolo.
+- **Export e statistiche avanzate**: report CSV/PDF, rating offensivo/difensivo, progression chart, analisi per team.
+- **Login federato**: integrare provider esterni (Google, federazioni) per la gestione delle credenziali.
+- **Supporto multi‑stile**: classifiche separate per stile (greco‑romana, libera, ecc.) e comparazioni pound‑for‑pound.
 
 ## Debiti tecnici noti
 
-- assenza di migrazioni DB (utilizzo diretto di `create_all`) – da
-  sostituire con Alembic o simili quando si passerà a PostgreSQL
-- modello `team` non normalizzato (attualmente solo un campo testuale)
-- il modello `Match` rappresenta prevalentemente incontri completati;
-  bisognerà separare la gestione dei match pianificati
-- logica admin non ancora separata dalla logica utente
-- validazioni di business semplificate (es. pesi, limiti età) da
-  approfondire
+- Mancanza di migrazioni DB (uso diretto di `create_all`) – sostituire con Alembic per il supporto a PostgreSQL.
+- Modello `team` non normalizzato (attualmente solo un campo testuale).
+- Il modello `Match` rappresenta prevalentemente incontri completati; serve separare i match programmati.
+- Logica admin non separata – la distinzione dei ruoli è solo concettuale finché non si implementa l’autenticazione.
+- Validazioni di business semplificate (es. pesi, limiti età) da approfondire.
 
 ## Scelte da confermare in futuro
 
-- formula definitiva del rating (K adattivo, decadimento temporale,
-  differenziazione per stile)
-- formula definitiva dell'indice mismatch (ponderazione delle componenti
-  e soglie di rifiuto)
-- utilizzo del peso reale registrato o del `default_weight`
-- logica esatta di gestione forfait e ritiro (es. punteggio minimo
-  garantito o penalità ulteriore)
-- struttura finale di serie/divisioni/promozioni
+- Formula definitiva del rating (K adattivo, decadimento temporale, differenziazione per stile).
+- Formula definitiva dell’indice mismatch.
+- Utilizzo del peso reale registrato o del `default_weight`.
+- Logica di gestione forfait e ritiro (punteggio minimo garantito o penalità ulteriore).
+- Struttura finale di serie/divisioni/promozioni.
