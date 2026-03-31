@@ -53,6 +53,14 @@ DB_CONTEXT_TEST = "test"
 DB_LOCATION_LOCAL = "local"
 DB_LOCATION_REMOTE = "remote"
 
+DB_SYNC_DIRECTION_LOCAL_TO_REMOTE = "local_to_remote"
+DB_SYNC_DIRECTION_REMOTE_TO_LOCAL = "remote_to_local"
+
+DB_SYNC_DIRECTION_LABELS = {
+    DB_SYNC_DIRECTION_LOCAL_TO_REMOTE: "Locale → Remoto",
+    DB_SYNC_DIRECTION_REMOTE_TO_LOCAL: "Remoto → Locale",
+}
+
 STATE_DB_MODE = "db_mode"
 STATE_SQLITE_PATH = "db_sqlite_path"
 STATE_POSTGRES_URL = "db_postgres_url"
@@ -190,14 +198,6 @@ def get_environment_description(environment_name: str) -> str:
 
 
 def can_sync_between_environments(source_environment: str, target_environment: str) -> bool:
-    """
-    Regola attuale:
-    - consentito solo tra ambienti della stessa famiglia
-      * league_local <-> league_remote
-      * test_local <-> test_remote
-    - mai consentito tra test_* e league_*
-    - mai consentito verso sé stesso
-    """
     if source_environment == target_environment:
         return False
 
@@ -235,6 +235,33 @@ def list_sync_compatible_targets(source_environment: str) -> list[str]:
         for environment_name in DB_ENV_OPTIONS
         if can_sync_between_environments(source_environment, environment_name)
     ]
+
+
+def build_sync_route(context: str, direction: str) -> tuple[str, str]:
+    context = (context or "").strip().lower()
+    direction = (direction or "").strip().lower()
+
+    if context == DB_CONTEXT_LEAGUE:
+        if direction == DB_SYNC_DIRECTION_LOCAL_TO_REMOTE:
+            return DB_ENV_LEAGUE_LOCAL, DB_ENV_LEAGUE_REMOTE
+        if direction == DB_SYNC_DIRECTION_REMOTE_TO_LOCAL:
+            return DB_ENV_LEAGUE_REMOTE, DB_ENV_LEAGUE_LOCAL
+
+    if context == DB_CONTEXT_TEST:
+        if direction == DB_SYNC_DIRECTION_LOCAL_TO_REMOTE:
+            return DB_ENV_TEST_LOCAL, DB_ENV_TEST_REMOTE
+        if direction == DB_SYNC_DIRECTION_REMOTE_TO_LOCAL:
+            return DB_ENV_TEST_REMOTE, DB_ENV_TEST_LOCAL
+
+    raise ValueError(f"Combinazione sync non valida: {context=} {direction=}")
+
+
+def get_sync_route_description(context: str, direction: str) -> str:
+    source_environment, target_environment = build_sync_route(context, direction)
+    return (
+        f"{DB_ENV_LABELS[source_environment]} → "
+        f"{DB_ENV_LABELS[target_environment]}"
+    )
 
 
 def _infer_initial_state() -> tuple[str, str, str, str]:
