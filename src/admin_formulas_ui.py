@@ -14,10 +14,12 @@ from src.formula_config_service import (
     save_group_parameters,
 )
 from src.level_evaluation_ui import render_level_assistant
+from src.matches import recompute_all_match_scores
 from src.models import Athlete, Match
-from src.ratings import recompute_ratings
-from src.rankings_ui import render_rankings_panel
 from src.pairing import calculate_age, generate_candidate_pairs
+from src.rankings import build_rankings, build_team_rankings
+from src.rankings_ui import render_rankings_panel
+from src.ratings import recompute_ratings
 from src.scoring import calculate_match_points, get_age_at_event
 from src.matchmaking_probability_ui import render_win_probability_metrics
 
@@ -200,13 +202,20 @@ def render_rating_tab() -> None:
 
     apply_pending_reset("ratings", "rating")
 
+    logistic_divisor = get_typed_value(
+        rating_config,
+        "logistic_divisor",
+        400.0,
+        float,
+    )
+
     st.subheader("Formula rating (Elo modificato)")
     st.markdown(
-        r"""
+        fr"""
 Il rating di un atleta viene aggiornato dopo ogni incontro secondo la formula:
 
 $$
-E_A = \frac{1}{1 + 10^{(R_B - R_A)/400}}
+E_A = \frac{{1}}{{1 + 10^{{(R_B - R_A)/{logistic_divisor:g}}}}}
 $$
 
 $$
@@ -220,6 +229,7 @@ dove:
 - $S_A$ è il punteggio effettivo dell'atleta A
 - $K$ è il `k_factor`
 - $I$ è l'`impact` del match
+- il divisore logistico è `logistic_divisor = {logistic_divisor:g}`
 """
     )
 
@@ -234,6 +244,11 @@ dove:
 - il `k_factor` controlla quanto il rating è sensibile ai risultati
 - più è alto, più il rating cambia rapidamente
 - più è basso, più il rating è stabile
+
+**Che cos'è il logistic divisor**
+- `logistic_divisor` controlla quanto la differenza rating polarizza il punteggio atteso
+- più è basso, più le probabilità si allontanano rapidamente dal `50% / 50%`
+- più è alto, più il sistema resta conservativo
 
 **Che cos'è l'impact**
 - `normal_match_impact` pesa i match normali
@@ -264,6 +279,7 @@ Quindi:
     rating_order = [
         "default_start_rating",
         "k_factor",
+        "logistic_divisor",
         "normal_match_impact",
         "retirement_match_impact",
         "forfeit_match_impact",
@@ -284,14 +300,22 @@ Quindi:
 
     if save_clicked:
         save_group_parameters("ratings", ratings_inputs)
-        load_config()
-        st.success("Parametri rating salvati correttamente.")
+        set_flash_message(
+            "success",
+            "Parametri rating salvati correttamente.",
+            target="ratings",
+        )
+        st.rerun()
 
     if save_and_recalc_clicked:
         save_group_parameters("ratings", ratings_inputs)
-        load_config()
         recompute_ratings()
-        st.success("Parametri rating salvati e rating ricalcolati completamente.")
+        set_flash_message(
+            "success",
+            "Parametri rating salvati e rating ricalcolati completamente.",
+            target="ratings",
+        )
+        st.rerun()
 
     if reset_clicked:
         reset_group_to_defaults("ratings")
@@ -318,8 +342,16 @@ Quindi:
 def render_matchmaking_tab() -> None:
     config = get_full_config()
     matchmaking_config: dict[str, Any] = config.get("matchmaking", {})
+    ratings_config: dict[str, Any] = config.get("ratings", {})
 
     apply_pending_reset("matchmaking", "matchmaking")
+
+    logistic_divisor = get_typed_value(
+        ratings_config,
+        "logistic_divisor",
+        400.0,
+        float,
+    )
 
     st.subheader("Formula matchmaking (indice di disomogeneità)")
     st.markdown(
@@ -357,27 +389,28 @@ $$
 
     with st.expander("Come viene calcolata la probabilità attesa"):
         st.markdown(
-            r"""
-    La probabilità attesa usa il **rating Elo** e corrisponde al punteggio atteso:
+            fr"""
+La probabilità attesa usa il **rating Elo** e corrisponde al punteggio atteso:
 
-    $$
-    E_A = \frac{1}{1 + 10^{(R_B - R_A)/400}}
-    $$
+$$
+E_A = \frac{{1}}{{1 + 10^{{(R_B - R_A)/{logistic_divisor:g}}}}}
+$$
 
-    dove:
+dove:
 
-    - $R_A$ è il rating dell'atleta A
-    - $R_B$ è il rating dell'atleta B
-    - $E_A$ è il punteggio atteso di A contro B
+- $R_A$ è il rating dell'atleta A
+- $R_B$ è il rating dell'atleta B
+- $E_A$ è il punteggio atteso di A contro B
+- il divisore logistico corrente è `logistic_divisor = {logistic_divisor:g}`
 
-    Nel sistema viene mostrato come **probabilità attesa di vittoria**:
-    - rating uguali → circa **50% / 50%**
-    - rating più alto → probabilità attesa più alta
+Nel sistema viene mostrato come **probabilità attesa di vittoria**:
+- rating uguali → circa **50% / 50%**
+- rating più alto → probabilità attesa più alta
 
-    Quindi:
-    - **mismatch** = quanto l'accoppiamento è equilibrato e adatto
-    - **probabilità attesa Elo** = chi è favorito in base ai rating correnti
-    """
+Quindi:
+- **mismatch** = quanto l'accoppiamento è equilibrato e adatto
+- **probabilità attesa Elo** = chi è favorito in base ai rating correnti
+"""
         )
 
     matchmaking_order = [
@@ -410,14 +443,28 @@ $$
 """
         )
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         save_clicked = col1.form_submit_button("Salva parametri matchmaking")
-        reset_clicked = col2.form_submit_button("Ripristina default matchmaking")
+        save_and_recalc_clicked = col2.form_submit_button("Salva e ricalcola mismatch")
+        reset_clicked = col3.form_submit_button("Ripristina default matchmaking")
 
     if save_clicked:
         save_group_parameters("matchmaking", matchmaking_inputs)
-        load_config()
-        st.success("Parametri matchmaking salvati correttamente.")
+        set_flash_message(
+            "success",
+            "Parametri matchmaking salvati correttamente.",
+            target="matchmaking",
+        )
+        st.rerun()
+
+    if save_and_recalc_clicked:
+        save_group_parameters("matchmaking", matchmaking_inputs)
+        set_flash_message(
+            "success",
+            "Parametri matchmaking salvati e mismatch aggiornato.",
+            target="matchmaking",
+        )
+        st.rerun()
 
     if reset_clicked:
         reset_group_to_defaults("matchmaking")
@@ -703,14 +750,37 @@ $$
     with st.form("scoring_form"):
         scoring_inputs = render_group_inputs(scoring_config, scoring_order, "scoring")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         save_clicked = col1.form_submit_button("Salva parametri scoring")
-        reset_clicked = col2.form_submit_button("Ripristina default scoring")
+        save_and_recalc_clicked = col2.form_submit_button("Salva e ricalcola scoring")
+        reset_clicked = col3.form_submit_button("Ripristina default scoring")
 
     if save_clicked:
         save_group_parameters("scoring", scoring_inputs)
-        load_config()
-        st.success("Parametri scoring salvati correttamente.")
+        set_flash_message(
+            "success",
+            "Parametri scoring salvati correttamente.",
+            target="scoring",
+        )
+        st.rerun()
+
+    if save_and_recalc_clicked:
+        save_group_parameters("scoring", scoring_inputs)
+        try:
+            updated_matches = recompute_all_match_scores()
+            recompute_ratings()
+            set_flash_message(
+                "success",
+                f"Parametri scoring salvati. Ricalcolati {updated_matches} match e aggiornati anche i rating.",
+                target="scoring",
+            )
+        except ValueError as exc:
+            set_flash_message(
+                "error",
+                f"Parametri scoring salvati ma ricalcolo interrotto: {exc}",
+                target="scoring",
+            )
+        st.rerun()
 
     if reset_clicked:
         reset_group_to_defaults("scoring")
@@ -922,6 +992,187 @@ $$
 
     render_flash_message("scoring")
 
+
+def render_team_ranking_tab() -> None:
+    config = get_full_config()
+    team_config: dict[str, Any] = config.get("team_ranking", {})
+
+    apply_pending_reset("team_ranking", "team_ranking")
+
+    ranking_method_options = {
+        "sum_with_bonus": "Somma punti atleti + bonus partecipazione",
+        "average_per_participating_athlete": "Media punti per atleta partecipante",
+    }
+
+    current_ranking_method = get_typed_value(
+        team_config,
+        "ranking_method",
+        "sum_with_bonus",
+        str,
+    )
+    current_bonus = get_typed_value(
+        team_config,
+        "participation_bonus_per_athlete",
+        2.0,
+        float,
+    )
+
+    st.subheader("Formula classifica team")
+    st.markdown(
+        r"""
+Sono disponibili due metodi alternativi.
+
+### Metodo 1 — Somma punti atleti + bonus partecipazione
+$$
+team\_score = class\_points\_total + (participating\_athletes \times participation\_bonus\_per\_athlete)
+$$
+
+### Metodo 2 — Media punti per atleta partecipante
+$$
+team\_score = \frac{class\_points\_total}{participating\_athletes}
+$$
+
+Nel secondo metodo il bonus partecipazione non entra nel punteggio finale.
+"""
+    )
+
+    method_widget_key = "team_ranking_ranking_method"
+    bonus_widget_key = "team_ranking_participation_bonus_per_athlete"
+    method_values = list(ranking_method_options.keys())
+    default_method_index = (
+        method_values.index(current_ranking_method)
+        if current_ranking_method in method_values
+        else 0
+    )
+
+    with st.form("team_ranking_form"):
+        if method_widget_key in st.session_state:
+            ranking_method = st.selectbox(
+                "Metodo classifica team",
+                options=method_values,
+                format_func=lambda value: ranking_method_options[value],
+                key=method_widget_key,
+            )
+        else:
+            ranking_method = st.selectbox(
+                "Metodo classifica team",
+                options=method_values,
+                index=default_method_index,
+                format_func=lambda value: ranking_method_options[value],
+                key=method_widget_key,
+            )
+
+        if bonus_widget_key in st.session_state:
+            participation_bonus = st.number_input(
+                "Bonus partecipazione per atleta",
+                format="%.3f",
+                key=bonus_widget_key,
+            )
+        else:
+            participation_bonus = st.number_input(
+                "Bonus partecipazione per atleta",
+                value=float(current_bonus),
+                format="%.3f",
+                key=bonus_widget_key,
+            )
+
+        if ranking_method == "average_per_participating_athlete":
+            st.caption(
+                "In modalità media il bonus partecipazione viene ignorato nel punteggio finale."
+            )
+
+        team_inputs = {
+            "ranking_method": ranking_method,
+            "participation_bonus_per_athlete": float(participation_bonus),
+        }
+
+        col1, col2, col3 = st.columns(3)
+        save_clicked = col1.form_submit_button("Salva formula team")
+        save_and_recalc_clicked = col2.form_submit_button("Salva e ricalcola classifica team")
+        reset_clicked = col3.form_submit_button("Ripristina default team")
+
+    if save_clicked:
+        save_group_parameters("team_ranking", team_inputs)
+        set_flash_message(
+            "success",
+            "Parametri classifica team salvati correttamente.",
+            target="team_ranking",
+        )
+        st.rerun()
+
+    if save_and_recalc_clicked:
+        save_group_parameters("team_ranking", team_inputs)
+        set_flash_message(
+            "success",
+            "Parametri classifica team salvati e classifica team aggiornata.",
+            target="team_ranking",
+        )
+        st.rerun()
+
+    if reset_clicked:
+        reset_group_to_defaults("team_ranking")
+        queue_group_reset("team_ranking", "team_ranking")
+        set_flash_message(
+            "warning",
+            "Parametri classifica team ripristinati ai valori di default.",
+            target="team_ranking",
+        )
+        st.rerun()
+
+    st.divider()
+    st.subheader("Anteprima classifica team")
+
+    preview_ranking_method = get_widget_value(
+        "team_ranking",
+        "ranking_method",
+        current_ranking_method,
+        str,
+    )
+    preview_participation_bonus = get_widget_value(
+        "team_ranking",
+        "participation_bonus_per_athlete",
+        current_bonus,
+        float,
+    )
+
+    ranking_rows = build_rankings()
+    team_rows = build_team_rankings(
+        ranking_rows=ranking_rows,
+        participation_bonus_per_athlete=float(preview_participation_bonus),
+        ranking_method=str(preview_ranking_method),
+    )
+
+    team_rows = [
+        row for row in team_rows
+        if row["participating_athletes"] > 0 or row["class_points_total"] > 0
+    ]
+
+    if not team_rows:
+        st.info("Non ci sono ancora dati sufficienti per mostrare la classifica team.")
+        render_flash_message("team_ranking")
+        return
+
+    preview_df = pd.DataFrame(
+        [
+            {
+                "Rank": row["rank"],
+                "Team": row["team"],
+                "Metodo": ranking_method_options.get(row["ranking_method"], row["ranking_method"]),
+                "Atleti partecipanti": row["participating_athletes"],
+                "Punti atleti": row["class_points_total"],
+                "Bonus partecipazione": row["participation_bonus"],
+                "Media punti/atleta": row["avg_points_per_participating_athlete"],
+                "Team score": row["team_score"],
+            }
+            for row in team_rows
+        ]
+    )
+
+    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+    render_flash_message("team_ranking")
+    
+    
 def render_level_evaluation_tab() -> None:
     config = get_full_config()
     level_config: dict[str, Any] = config.get("level_evaluation", {})

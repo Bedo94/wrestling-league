@@ -547,6 +547,68 @@ def list_matches() -> list[Match]:
     finally:
         session.close()
 
+def recompute_all_match_scores() -> int:
+    session = get_session()
+    updated_count = 0
+
+    try:
+        matches = list(session.scalars(select(Match).order_by(Match.id.asc())).all())
+
+        for match in matches:
+            event = session.get(Event, match.event_id)
+            athlete_a = session.get(Athlete, match.athlete_a_id)
+            athlete_b = session.get(Athlete, match.athlete_b_id)
+
+            if event is None or athlete_a is None or athlete_b is None:
+                continue
+
+            if match.win_type is None:
+                continue
+
+            try:
+                score_data = _calculate_score_data(
+                    athlete_a_id=match.athlete_a_id,
+                    athlete_b_id=match.athlete_b_id,
+                    winner_id=match.winner_id,
+                    win_type=match.win_type,
+                    weight_a=float(match.weight_a),
+                    weight_b=float(match.weight_b),
+                    raw_score_a=float(match.raw_score_a),
+                    raw_score_b=float(match.raw_score_b),
+                    athlete_a_sex=athlete_a.sex,
+                    athlete_b_sex=athlete_b.sex,
+                    athlete_a_birth_date=athlete_a.birth_date,
+                    athlete_b_birth_date=athlete_b.birth_date,
+                    event_date=event.event_date,
+                )
+            except ValueError as exc:
+                athlete_a_name = f"{athlete_a.first_name} {athlete_a.last_name or ''}".strip()
+                athlete_b_name = f"{athlete_b.first_name} {athlete_b.last_name or ''}".strip()
+                raise ValueError(
+                    f"Impossibile ricalcolare il match ID {match.id} "
+                    f"({athlete_a_name} vs {athlete_b_name}): {exc}"
+                ) from exc
+
+            new_points_a = float(score_data["total_points_a"])
+            new_points_b = float(score_data["total_points_b"])
+
+            if (
+                float(match.points_a or 0.0) != new_points_a
+                or float(match.points_b or 0.0) != new_points_b
+            ):
+                updated_count += 1
+
+            match.points_a = new_points_a
+            match.points_b = new_points_b
+
+        session.commit()
+        return updated_count
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 
 def backfill_match_sync_fields() -> int:
     session = get_session()

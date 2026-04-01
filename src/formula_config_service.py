@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime
 import json
 from typing import Any, Dict, Optional
@@ -7,11 +8,18 @@ from sqlalchemy import select
 from src.database import get_session
 from src.models import CalculationRun, FormulaParameter, FormulaVersion
 from src.settings import (
-    SCORING_SETTINGS,
+    LEVEL_EVALUATION_SETTINGS,
     MATCHMAKING_SETTINGS,
     RATINGS_SETTINGS,
+    SCORING_SETTINGS,
     TEAM_RANKING_SETTINGS,
-    LEVEL_EVALUATION_SETTINGS,
+)
+from src.settings_defaults import (
+    LEVEL_EVALUATION_SETTINGS_DEFAULTS,
+    MATCHMAKING_SETTINGS_DEFAULTS,
+    RATINGS_SETTINGS_DEFAULTS,
+    SCORING_SETTINGS_DEFAULTS,
+    TEAM_RANKING_SETTINGS_DEFAULTS,
 )
 
 
@@ -32,22 +40,36 @@ def parse_value(raw_value: str, value_type: str | None = None) -> Any:
     return float(raw_value)
 
 
+def _replace_live_group(target: dict[str, Any], defaults: dict[str, Any]) -> None:
+    target.clear()
+    target.update(deepcopy(defaults))
+
+
+def _reset_live_settings_to_defaults() -> None:
+    _replace_live_group(SCORING_SETTINGS, SCORING_SETTINGS_DEFAULTS)
+    _replace_live_group(MATCHMAKING_SETTINGS, MATCHMAKING_SETTINGS_DEFAULTS)
+    _replace_live_group(RATINGS_SETTINGS, RATINGS_SETTINGS_DEFAULTS)
+    _replace_live_group(TEAM_RANKING_SETTINGS, TEAM_RANKING_SETTINGS_DEFAULTS)
+    _replace_live_group(LEVEL_EVALUATION_SETTINGS, LEVEL_EVALUATION_SETTINGS_DEFAULTS)
+
+
 def get_all_defaults() -> Dict[str, Dict[str, Any]]:
     return {
-        "scoring": dict(SCORING_SETTINGS),
-        "matchmaking": dict(MATCHMAKING_SETTINGS),
-        "ratings": dict(RATINGS_SETTINGS),
-        "team_ranking": dict(TEAM_RANKING_SETTINGS),
-        "level_evaluation": dict(LEVEL_EVALUATION_SETTINGS),
+        "scoring": deepcopy(SCORING_SETTINGS_DEFAULTS),
+        "matchmaking": deepcopy(MATCHMAKING_SETTINGS_DEFAULTS),
+        "ratings": deepcopy(RATINGS_SETTINGS_DEFAULTS),
+        "team_ranking": deepcopy(TEAM_RANKING_SETTINGS_DEFAULTS),
+        "level_evaluation": deepcopy(LEVEL_EVALUATION_SETTINGS_DEFAULTS),
     }
 
 
 def load_config() -> None:
     """
-    Load configuration values from the database and override the default dictionaries
-    defined in src.settings. This function should be called after the database
-    has been initialised to ensure custom parameters are applied.
+    Reset live settings to pristine defaults, then override them with values
+    stored in FormulaParameter.
     """
+    _reset_live_settings_to_defaults()
+
     session = get_session()
     try:
         params = session.scalars(select(FormulaParameter)).all()
@@ -73,9 +95,6 @@ def load_config() -> None:
 def get_parameter(group: str, key: str) -> Any:
     """
     Return the current value for a parameter, falling back to its default.
-
-    Parameters are organised by section (group). If a custom value is stored
-    in the database it will be returned; otherwise the default is used.
     """
     defaults = get_all_defaults()
     session = get_session()
@@ -114,10 +133,7 @@ def get_full_config() -> Dict[str, Dict[str, Any]]:
 
 def save_parameters(values: Dict[str, Dict[str, Any]]) -> None:
     """
-    Persist a set of configuration values to the database. Values should be
-    provided as a nested dict of the form {group: {key: value}}.
-
-    Existing rows are updated, and new rows are inserted as needed.
+    Persist a set of configuration values to the database.
     """
     session = get_session()
     try:
@@ -163,8 +179,7 @@ def save_parameters(values: Dict[str, Dict[str, Any]]) -> None:
 
 def reset_to_defaults() -> None:
     """
-    Clear all custom configuration values from the database and revert to
-    the defaults defined in src.settings.
+    Clear all custom configuration values from the database and revert to defaults.
     """
     session = get_session()
     try:
@@ -177,7 +192,7 @@ def reset_to_defaults() -> None:
 
 
 def get_group_defaults(group: str) -> dict[str, Any]:
-    return get_all_defaults().get(group, {}).copy()
+    return deepcopy(get_all_defaults().get(group, {}))
 
 
 def save_group_parameters(group: str, values: dict[str, Any]) -> None:
@@ -213,7 +228,7 @@ def _deserialize_config(raw_value: str) -> dict[str, Any]:
 
 
 def get_current_group_config(group: str) -> dict[str, Any]:
-    return get_full_config().get(group, {}).copy()
+    return deepcopy(get_full_config().get(group, {}))
 
 
 def get_next_formula_version_number(group: str) -> int:

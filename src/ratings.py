@@ -14,8 +14,17 @@ def get_start_rating(level: int) -> float:
     return float(start_ratings.get(level, default_rating))
 
 
-def expected_score(rating_a: float, rating_b: float) -> float:
-    return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
+def get_logistic_divisor() -> float:
+    return float(RATINGS_SETTINGS.get("logistic_divisor", 400.0))
+
+
+def expected_score(
+    rating_a: float,
+    rating_b: float,
+    logistic_divisor: float | None = None,
+) -> float:
+    divisor = get_logistic_divisor() if logistic_divisor is None else float(logistic_divisor)
+    return 1 / (1 + 10 ** ((rating_b - rating_a) / divisor))
 
 
 def get_actual_scores(match: Match) -> tuple[float, float]:
@@ -97,17 +106,9 @@ def recompute_ratings() -> Mapping[int, float]:
 def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
     """
     Recompute athlete ratings for matches occurring on or after the given date.
-
-    Ratings for matches before the given date are left unchanged, serving as the
-    starting point for subsequent updates. This allows experimenting with new
-    formula parameters without disturbing historical ratings prior to the change.
-
-    :param start_date: Matches with event_date >= start_date will be reprocessed.
-    :return: A mapping of athlete IDs to their final ratings after recomputation.
     """
     session = get_session()
     try:
-        # build initial ratings map based on current ratings in DB
         athletes = list(session.scalars(select(Athlete).order_by(Athlete.id)).all())
         current_ratings: dict[int, float] = {
             athlete.id: float(athlete.rating or get_start_rating(athlete.level))
@@ -116,7 +117,6 @@ def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
         default_rating = float(RATINGS_SETTINGS["default_start_rating"])
         k_factor = float(RATINGS_SETTINGS["k_factor"])
 
-        # fetch matches with their event dates ordered chronologically
         stmt = (
             select(Match, Event.event_date)
             .join(Event, Match.event_id == Event.id)
@@ -135,13 +135,11 @@ def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
             impact = get_match_impact(match.win_type)
             k = k_factor * impact
 
-            # update ratings in memory
             new_rating_a = rating_a + k * (actual_a - expected_a)
             new_rating_b = rating_b + k * (actual_b - expected_b)
             current_ratings[athlete_a_id] = float(new_rating_a)
             current_ratings[athlete_b_id] = float(new_rating_b)
 
-            # persist only for matches on or after the threshold
             if event_date >= start_date:
                 match_rating_a = round(new_rating_a, 2)
                 match_rating_b = round(new_rating_b, 2)

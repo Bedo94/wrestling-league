@@ -2,10 +2,10 @@ from datetime import date
 from typing import Any
 
 from src.athletes import list_athletes
-from src.matches import list_matches
-from src.levels import get_level_label
-from src.settings import TEAM_RANKING_SETTINGS
 from src.events import list_events
+from src.levels import get_level_label
+from src.matches import list_matches
+from src.settings import TEAM_RANKING_SETTINGS
 
 
 def calculate_age(birth_date: date, reference_date: date) -> int:
@@ -139,10 +139,16 @@ def build_rankings(
 def build_team_rankings(
     ranking_rows: list[dict[str, Any]],
     participation_bonus_per_athlete: float | None = None,
+    ranking_method: str | None = None,
 ) -> list[dict[str, Any]]:
     if participation_bonus_per_athlete is None:
         participation_bonus_per_athlete = float(
             TEAM_RANKING_SETTINGS["participation_bonus_per_athlete"]
+        )
+
+    if ranking_method is None:
+        ranking_method = str(
+            TEAM_RANKING_SETTINGS.get("ranking_method", "sum_with_bonus")
         )
 
     teams: dict[str, dict[str, Any]] = {}
@@ -165,6 +171,7 @@ def build_team_rankings(
                 "participation_bonus": 0.0,
                 "team_score": 0.0,
                 "avg_points_per_participating_athlete": 0.0,
+                "ranking_method": ranking_method,
             }
 
         team_row = teams[team_name]
@@ -189,12 +196,6 @@ def build_team_rankings(
         team_row["technical_diff"] = (
             team_row["technical_points_for"] - team_row["technical_points_against"]
         )
-        team_row["participation_bonus"] = (
-            team_row["participating_athletes"] * participation_bonus_per_athlete
-        )
-        team_row["team_score"] = (
-            team_row["class_points_total"] + team_row["participation_bonus"]
-        )
 
         if team_row["participating_athletes"] > 0:
             team_row["avg_points_per_participating_athlete"] = (
@@ -202,6 +203,17 @@ def build_team_rankings(
             )
         else:
             team_row["avg_points_per_participating_athlete"] = 0.0
+
+        if ranking_method == "average_per_participating_athlete":
+            team_row["participation_bonus"] = 0.0
+            team_row["team_score"] = team_row["avg_points_per_participating_athlete"]
+        else:
+            team_row["participation_bonus"] = (
+                team_row["participating_athletes"] * participation_bonus_per_athlete
+            )
+            team_row["team_score"] = (
+                team_row["class_points_total"] + team_row["participation_bonus"]
+            )
 
         team_row["class_points_total"] = round(team_row["class_points_total"], 2)
         team_row["technical_points_for"] = round(team_row["technical_points_for"], 2)

@@ -1,101 +1,24 @@
 """
 Configuration defaults for the wrestling league formulas.
 
-This module defines the default parameters used for scoring, matchmaking,
-ratings, and team ranking formulas. The values mirror those currently
-in use in the project and can be overridden at runtime by values stored
-in the database via the formula configuration service.
+This module exposes mutable live settings used by the application.
+Pristine defaults are stored in src.settings_defaults.
 """
 
-# Default scoring parameters
-SCORING_SETTINGS = {
-    "max_weight_diff_kg": 10.0,
-    "weight_bonus_per_kg": 0.05,
-    "winner_base_points": 2.0,
-    "loser_base_points": 1.0,
-    "performance_bonus_max": 0.5,
-    "minor_age_threshold": 18,
-    "special_bonus_factor": 1.30,
-    "retirement_winner_base_points": 1.2,
-    "retirement_loser_base_points": 0.3,
-    "forfeit_winner_base_points": 0.5,
-    "forfeit_loser_base_points": 0.0,
+from copy import deepcopy
 
-    # bonus fisso per modalità di chiusura match
-    "points_finish_bonus": 0.0,
-    "pinfall_finish_bonus": 0.4,
-    "retirement_finish_bonus": 0.0,
-    "forfeit_finish_bonus": 0.0,
-}
+from src.settings_defaults import (
+    LEVEL_EVALUATION_SETTINGS_DEFAULTS,
+    MATCHMAKING_SETTINGS_DEFAULTS,
+    RATINGS_SETTINGS_DEFAULTS,
+    SCORING_SETTINGS_DEFAULTS,
+    TEAM_RANKING_SETTINGS_DEFAULTS,
+    TOKEN_SETTINGS_DEFAULTS,
+)
 
-# Default matchmaking parameters
-MATCHMAKING_SETTINGS = {
-    "max_weight_diff_default": 10.0,
-    "weight_factor": 3.0,
-    "level_factor": 8.0,
-    "rating_divisor": 20.0,
-    "age_factor": 1.0,
-    "rematch_penalty": 15.0,
-    "max_level_diff_default": 2,
-    "max_age_diff_default": 8,
-    "use_rating_default": True,
-    "avoid_rematches_default": True,
-    "same_sex_only_default": False,
-}
-
-# Default ratings parameters
-RATINGS_SETTINGS = {
-    "level_start_ratings": {
-        1: 900.0,
-        2: 1000.0,
-        3: 1100.0,
-        4: 1200.0,
-    },
-    "default_start_rating": 1000.0,
-    "k_factor": 24.0,
-    "normal_match_impact": 1.0,
-    "retirement_match_impact": 0.35,
-    "forfeit_match_impact": 0.05,
-}
-
-# Default team ranking parameters
-TEAM_RANKING_SETTINGS = {
-    "participation_bonus_per_athlete": 2.0,
-}
-
-# Default token parameters
-TOKEN_SETTINGS = {
-    "default_token_budget_per_season": 4,
-    "default_token_cost": 1,
-}
-
-# Default level evaluation parameters
-LEVEL_EVALUATION_SETTINGS = {
-    # peso massimo delle tre componenti
-    "years_weight": 25.0,
-    "matches_weight": 25.0,
-    "medals_weight": 50.0,
-
-    # soglie di saturazione
-    "years_cap": 10,
-    "matches_cap": 80,
-    "medals_cap": 20.0,
-
-    # peso del tipo di medaglia
-    "gold_weight": 1.0,
-    "silver_weight": 0.6,
-    "bronze_weight": 0.35,
-
-    # peso del tipo di competizione
-    "regional_weight": 1.0,
-    "interregional_weight": 1.4,
-    "national_open_weight": 1.8,
-    "coppa_italia_weight": 2.4,
-    "campionato_italiano_weight": 3.0,
-    "international_weight": 3.5,
-
-    # soglie per livello consigliato
-    "threshold_level_2": 20.0,
-    "threshold_level_3": 45.0,
-    "threshold_level_4": 70.0,
-}
+SCORING_SETTINGS = deepcopy(SCORING_SETTINGS_DEFAULTS)
+MATCHMAKING_SETTINGS = deepcopy(MATCHMAKING_SETTINGS_DEFAULTS)
+RATINGS_SETTINGS = deepcopy(RATINGS_SETTINGS_DEFAULTS)
+TEAM_RANKING_SETTINGS = deepcopy(TEAM_RANKING_SETTINGS_DEFAULTS)
+TOKEN_SETTINGS = deepcopy(TOKEN_SETTINGS_DEFAULTS)
+LEVEL_EVALUATION_SETTINGS = deepcopy(LEVEL_EVALUATION_SETTINGS_DEFAULTS)
