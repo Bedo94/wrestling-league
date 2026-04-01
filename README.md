@@ -49,4 +49,4 @@ Usando [uv](https://github.com/astral-sh/uv) per installare le dipendenze e avvi
 
 ```bash
 uv sync  # installa le dipendenze
-uv run streamlit run app.py
+uv run python -m streamlit run app.py

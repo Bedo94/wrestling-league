@@ -157,7 +157,6 @@ class Match(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Riferimenti logici per sync cross-database
-    # Tengo naming coerente con la struttura attuale (a/b) invece di red/blue
     event_sync_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         nullable=True,
@@ -174,6 +173,11 @@ class Match(Base):
         index=True,
     )
     winner_sync_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+    token_spender_sync_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         nullable=True,
         index=True,

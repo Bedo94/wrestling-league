@@ -388,6 +388,9 @@ def _resolve_match_payload(
     target_athlete_id_by_sync: dict[str, int],
     target_event_id_by_sync: dict[str, int],
 ) -> tuple[dict[str, Any] | None, str | None]:
+    # Uso prioritariamente i sync_id già salvati nella riga match.
+    # Lascio il fallback temporaneo agli ID sorgente solo per compatibilità
+    # con eventuali record vecchi non ancora backfillati.
     event_sync_id = source_match.event_sync_id or source_event_sync_by_id.get(source_match.event_id)
     athlete_a_sync_id = source_match.athlete_a_sync_id or source_athlete_sync_by_id.get(source_match.athlete_a_id)
     athlete_b_sync_id = source_match.athlete_b_sync_id or source_athlete_sync_by_id.get(source_match.athlete_b_id)
@@ -395,6 +398,10 @@ def _resolve_match_payload(
     winner_sync_id = source_match.winner_sync_id
     if winner_sync_id is None and source_match.winner_id is not None:
         winner_sync_id = source_athlete_sync_by_id.get(source_match.winner_id)
+
+    token_spender_sync_id = source_match.token_spender_sync_id
+    if token_spender_sync_id is None and source_match.token_spender_id is not None:
+        token_spender_sync_id = source_athlete_sync_by_id.get(source_match.token_spender_id)
 
     if not event_sync_id:
         return None, "missing_source_event_sync_id"
@@ -419,12 +426,10 @@ def _resolve_match_payload(
             return None, "missing_target_winner_reference"
 
     target_token_spender_id = None
-    if source_match.token_spender_id is not None:
-        token_spender_sync_id = source_athlete_sync_by_id.get(source_match.token_spender_id)
-        if token_spender_sync_id:
-            target_token_spender_id = target_athlete_id_by_sync.get(token_spender_sync_id)
-            if target_token_spender_id is None:
-                return None, "missing_target_token_spender_reference"
+    if token_spender_sync_id:
+        target_token_spender_id = target_athlete_id_by_sync.get(token_spender_sync_id)
+        if target_token_spender_id is None:
+            return None, "missing_target_token_spender_reference"
 
     payload = {
         "event_id": target_event_id,
@@ -449,6 +454,7 @@ def _resolve_match_payload(
         "athlete_a_sync_id": athlete_a_sync_id,
         "athlete_b_sync_id": athlete_b_sync_id,
         "winner_sync_id": winner_sync_id,
+        "token_spender_sync_id": token_spender_sync_id,
         "sync_id": source_match.sync_id,
         "created_at": source_match.created_at,
         "updated_at": source_match.updated_at,
@@ -481,6 +487,7 @@ def _copy_match_fields(payload: dict[str, Any], target: Match) -> None:
     target.athlete_a_sync_id = payload["athlete_a_sync_id"]
     target.athlete_b_sync_id = payload["athlete_b_sync_id"]
     target.winner_sync_id = payload["winner_sync_id"]
+    target.token_spender_sync_id = payload["token_spender_sync_id"]
 
 
 def _sync_matches(
@@ -533,6 +540,7 @@ def _sync_matches(
         "athlete_a_sync_id",
         "athlete_b_sync_id",
         "winner_sync_id",
+        "token_spender_sync_id",
     ]
 
     for source_row in source_rows:

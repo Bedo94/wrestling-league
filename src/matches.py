@@ -15,11 +15,16 @@ def _validate_match_inputs(
     athlete_b_id: int,
     raw_score_a: float,
     raw_score_b: float,
-    winner_id: int,
+    winner_id: Optional[int],
     win_type: str,
 ) -> None:
     if athlete_a_id == athlete_b_id:
         raise ValueError("Un atleta non può affrontare sé stesso.")
+
+    if winner_id is None:
+        raise ValueError(
+            "winner_id è obbligatorio finché il pareggio non sarà gestito nello scoring."
+        )
 
     if winner_id not in {athlete_a_id, athlete_b_id}:
         raise ValueError("Il vincitore deve essere uno dei due atleti del match.")
@@ -101,6 +106,7 @@ def _validate_token_usage(
     if token_spender is None:
         raise ValueError("Atleta che spende il token non trovato.")
 
+    assert token_spender_id is not None
     used_tokens = _get_tokens_used_in_season(
         session=session,
         athlete_id=token_spender_id,
@@ -117,6 +123,71 @@ def _validate_token_usage(
     return True, token_spender_id, token_cost
 
 
+def _require_sync_id(entity, entity_label: str) -> str:
+    sync_id = getattr(entity, "sync_id", None)
+    if not sync_id:
+        raise ValueError(f"{entity_label} senza sync_id: impossibile creare/allineare il match.")
+    return sync_id
+
+
+def populate_match_sync_fields(
+    *,
+    match: Match,
+    event: Event,
+    athlete_a: Athlete,
+    athlete_b: Athlete,
+    winner: Athlete | None = None,
+    token_spender: Athlete | None = None,
+) -> None:
+    match.event_sync_id = _require_sync_id(event, "Evento")
+    match.athlete_a_sync_id = _require_sync_id(athlete_a, "Athlete A")
+    match.athlete_b_sync_id = _require_sync_id(athlete_b, "Athlete B")
+    match.winner_sync_id = (
+        _require_sync_id(winner, "Vincitore") if winner is not None else None
+    )
+    match.token_spender_sync_id = (
+        _require_sync_id(token_spender, "Token spender")
+        if token_spender is not None
+        else None
+    )
+
+
+def _load_match_entities(
+    session,
+    *,
+    event_id: int,
+    athlete_a_id: int,
+    athlete_b_id: int,
+    winner_id: Optional[int],
+    token_spender_id: Optional[int],
+) -> tuple[Event, Athlete, Athlete, Optional[Athlete], Optional[Athlete]]:
+    event = session.get(Event, event_id)
+    if event is None:
+        raise ValueError(f"Evento con ID {event_id} non trovato.")
+
+    athlete_a = session.get(Athlete, athlete_a_id)
+    if athlete_a is None:
+        raise ValueError(f"Atleta A con ID {athlete_a_id} non trovato.")
+
+    athlete_b = session.get(Athlete, athlete_b_id)
+    if athlete_b is None:
+        raise ValueError(f"Atleta B con ID {athlete_b_id} non trovato.")
+
+    winner = None
+    if winner_id is not None:
+        winner = session.get(Athlete, winner_id)
+        if winner is None:
+            raise ValueError(f"Vincitore con ID {winner_id} non trovato.")
+
+    token_spender = None
+    if token_spender_id is not None:
+        token_spender = session.get(Athlete, token_spender_id)
+        if token_spender is None:
+            raise ValueError(f"Token spender con ID {token_spender_id} non trovato.")
+
+    return event, athlete_a, athlete_b, winner, token_spender
+
+
 def _build_match(
     event_id: int,
     athlete_a_id: int,
@@ -128,7 +199,7 @@ def _build_match(
     level_b: int,
     raw_score_a: float,
     raw_score_b: float,
-    winner_id: int,
+    winner_id: Optional[int],
     win_type: str,
     points_a: float,
     points_b: float,
@@ -159,10 +230,52 @@ def _build_match(
     )
 
 
+def _apply_match_fields(
+    *,
+    match: Match,
+    event_id: int,
+    athlete_a_id: int,
+    athlete_b_id: int,
+    style: str,
+    weight_a: float,
+    weight_b: float,
+    level_a: int,
+    level_b: int,
+    raw_score_a: float,
+    raw_score_b: float,
+    winner_id: Optional[int],
+    win_type: str,
+    points_a: float,
+    points_b: float,
+    is_token_match: bool,
+    token_spender_id: Optional[int],
+    token_cost: int,
+    notes: Optional[str],
+) -> None:
+    match.event_id = event_id
+    match.athlete_a_id = athlete_a_id
+    match.athlete_b_id = athlete_b_id
+    match.style = style
+    match.weight_a = weight_a
+    match.weight_b = weight_b
+    match.level_a = level_a
+    match.level_b = level_b
+    match.raw_score_a = raw_score_a
+    match.raw_score_b = raw_score_b
+    match.winner_id = winner_id
+    match.win_type = win_type
+    match.points_a = points_a
+    match.points_b = points_b
+    match.is_token_match = is_token_match
+    match.token_spender_id = token_spender_id
+    match.token_cost = token_cost
+    match.notes = (notes or "").strip() or None
+
+
 def _calculate_score_data(
     athlete_a_id: int,
     athlete_b_id: int,
-    winner_id: int,
+    winner_id: Optional[int],
     win_type: str,
     weight_a: float,
     weight_b: float,
@@ -182,6 +295,8 @@ def _calculate_score_data(
         winner_id=winner_id,
         win_type=win_type,
     )
+
+    assert winner_id is not None
 
     return calculate_match_points(
         athlete_a_id=athlete_a_id,
@@ -216,7 +331,7 @@ def create_match(
     athlete_a_birth_date: date,
     athlete_b_birth_date: date,
     event_date: date,
-    winner_id: int,
+    winner_id: Optional[int],
     win_type: str,
     is_token_match: bool = False,
     token_spender_id: Optional[int] = None,
@@ -255,6 +370,15 @@ def create_match(
             token_cost=token_cost,
         )
 
+        event, athlete_a, athlete_b, winner, token_spender = _load_match_entities(
+            session,
+            event_id=event_id,
+            athlete_a_id=athlete_a_id,
+            athlete_b_id=athlete_b_id,
+            winner_id=winner_id,
+            token_spender_id=token_spender_id,
+        )
+
         match = _build_match(
             event_id=event_id,
             athlete_a_id=athlete_a_id,
@@ -275,6 +399,16 @@ def create_match(
             token_cost=token_cost,
             notes=notes,
         )
+
+        populate_match_sync_fields(
+            match=match,
+            event=event,
+            athlete_a=athlete_a,
+            athlete_b=athlete_b,
+            winner=winner,
+            token_spender=token_spender,
+        )
+
         session.add(match)
         session.commit()
         session.refresh(match)
@@ -300,7 +434,7 @@ def replace_match(
     athlete_a_birth_date: date,
     athlete_b_birth_date: date,
     event_date: date,
-    winner_id: int,
+    winner_id: Optional[int],
     win_type: str,
     is_token_match: bool = False,
     token_spender_id: Optional[int] = None,
@@ -345,10 +479,17 @@ def replace_match(
                 exclude_match_id=match_id,
             )
 
-            session.delete(existing_match)
-            session.flush()
+            event, athlete_a, athlete_b, winner, token_spender = _load_match_entities(
+                session,
+                event_id=event_id,
+                athlete_a_id=athlete_a_id,
+                athlete_b_id=athlete_b_id,
+                winner_id=winner_id,
+                token_spender_id=token_spender_id,
+            )
 
-            new_match = _build_match(
+            _apply_match_fields(
+                match=existing_match,
                 event_id=event_id,
                 athlete_a_id=athlete_a_id,
                 athlete_b_id=athlete_b_id,
@@ -368,11 +509,20 @@ def replace_match(
                 token_cost=token_cost,
                 notes=notes,
             )
-            session.add(new_match)
-            session.flush()
-            session.refresh(new_match)
 
-        return new_match
+            populate_match_sync_fields(
+                match=existing_match,
+                event=event,
+                athlete_a=athlete_a,
+                athlete_b=athlete_b,
+                winner=winner,
+                token_spender=token_spender,
+            )
+
+            session.flush()
+            session.refresh(existing_match)
+
+        return existing_match
     finally:
         session.close()
 
@@ -394,5 +544,66 @@ def list_matches() -> list[Match]:
     try:
         stmt = select(Match).order_by(Match.id.desc())
         return list(session.scalars(stmt).all())
+    finally:
+        session.close()
+
+
+def backfill_match_sync_fields() -> int:
+    session = get_session()
+    updated_count = 0
+
+    try:
+        matches = session.scalars(select(Match).order_by(Match.id.asc())).all()
+
+        for match in matches:
+            event = session.get(Event, match.event_id)
+            athlete_a = session.get(Athlete, match.athlete_a_id)
+            athlete_b = session.get(Athlete, match.athlete_b_id)
+
+            winner = (
+                session.get(Athlete, match.winner_id)
+                if match.winner_id is not None
+                else None
+            )
+
+            token_spender = (
+                session.get(Athlete, match.token_spender_id)
+                if match.token_spender_id is not None
+                else None
+            )
+
+            if event is None or athlete_a is None or athlete_b is None:
+                continue
+
+            before = (
+                match.event_sync_id,
+                match.athlete_a_sync_id,
+                match.athlete_b_sync_id,
+                match.winner_sync_id,
+                match.token_spender_sync_id,
+            )
+
+            populate_match_sync_fields(
+                match=match,
+                event=event,
+                athlete_a=athlete_a,
+                athlete_b=athlete_b,
+                winner=winner,
+                token_spender=token_spender,
+            )
+
+            after = (
+                match.event_sync_id,
+                match.athlete_a_sync_id,
+                match.athlete_b_sync_id,
+                match.winner_sync_id,
+                match.token_spender_sync_id,
+            )
+
+            if before != after:
+                updated_count += 1
+
+        session.commit()
+        return updated_count
     finally:
         session.close()
