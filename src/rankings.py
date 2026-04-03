@@ -5,7 +5,7 @@ from src.athletes import list_athletes
 from src.events import list_events
 from src.levels import get_level_label
 from src.matches import list_matches
-from src.settings import TEAM_RANKING_SETTINGS
+from src.settings import ATHLETE_RANKING_SETTINGS, TEAM_RANKING_SETTINGS
 
 
 def calculate_age(birth_date: date, reference_date: date) -> int:
@@ -15,13 +15,61 @@ def calculate_age(birth_date: date, reference_date: date) -> int:
     return age
 
 
+def sort_ranking_rows(
+    ranking_rows: list[dict[str, Any]],
+    ranking_method: str = "cumulative",
+    min_matches_for_average: int = 2,
+) -> list[dict[str, Any]]:
+    rows = [{**row} for row in ranking_rows]
+
+    if ranking_method == "average_per_match":
+        rows.sort(
+            key=lambda x: (
+                x["matches"] < min_matches_for_average,
+                -float(x.get("avg_class_points", 0.0)),
+                -int(x.get("wins", 0)),
+                -float(x.get("technical_diff", 0.0)),
+                -float(x.get("technical_points_for", 0.0)),
+                -float(x.get("class_points_total", 0.0)),
+                x.get("name", "").lower(),
+            )
+        )
+    else:
+        rows.sort(
+            key=lambda x: (
+                -float(x.get("class_points_total", 0.0)),
+                -int(x.get("wins", 0)),
+                -float(x.get("technical_diff", 0.0)),
+                -float(x.get("technical_points_for", 0.0)),
+                x.get("name", "").lower(),
+            )
+        )
+
+    for index, row in enumerate(rows, start=1):
+        row["rank"] = index
+
+    return rows
+
+
 def build_rankings(
     reference_date: date | None = None,
     years: list[int] | None = None,
     event_ids: list[int] | None = None,
+    ranking_method: str | None = None,
+    min_matches_for_average: int | None = None,
 ) -> list[dict[str, Any]]:
     if reference_date is None:
         reference_date = date.today()
+
+    if ranking_method is None:
+        ranking_method = str(
+            ATHLETE_RANKING_SETTINGS.get("ranking_method", "cumulative")
+        )
+
+    if min_matches_for_average is None:
+        min_matches_for_average = int(
+            ATHLETE_RANKING_SETTINGS.get("min_matches_for_average", 2)
+        )
 
     athletes = list_athletes(include_inactive=True)
     matches = list_matches()
@@ -75,6 +123,9 @@ def build_rankings(
             "technical_points_against": 0.0,
             "technical_diff": 0.0,
             "avg_class_points": 0.0,
+            "ranking_method": ranking_method,
+            "ranking_score": 0.0,
+            "is_provisional": False,
         }
 
     for match in matches:
@@ -114,26 +165,25 @@ def build_rankings(
         else:
             row["avg_class_points"] = 0.0
 
+        if ranking_method == "average_per_match":
+            row["ranking_score"] = float(row["avg_class_points"])
+            row["is_provisional"] = row["matches"] < min_matches_for_average
+        else:
+            row["ranking_score"] = float(row["class_points_total"])
+            row["is_provisional"] = False
+
         row["technical_points_for"] = round(row["technical_points_for"], 2)
         row["technical_points_against"] = round(row["technical_points_against"], 2)
         row["technical_diff"] = round(row["technical_diff"], 2)
+        row["ranking_score"] = round(row["ranking_score"], 2)
 
         results.append(row)
 
-    results.sort(
-        key=lambda x: (
-            -x["class_points_total"],
-            -x["wins"],
-            -x["technical_diff"],
-            -x["technical_points_for"],
-            x["name"].lower(),
-        )
+    return sort_ranking_rows(
+        results,
+        ranking_method=ranking_method,
+        min_matches_for_average=min_matches_for_average,
     )
-
-    for index, row in enumerate(results, start=1):
-        row["rank"] = index
-
-    return results
 
 
 def build_team_rankings(

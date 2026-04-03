@@ -33,6 +33,29 @@ def athlete_label(athlete, reference_date: date) -> str:
     )
 
 
+def event_label(event) -> str:
+    return f"{event.name} — {event.event_date}"
+
+
+def prepare_event_selection_state(event_options: list[int]) -> str:
+    event_ids_key = "pairing_event_ids"
+    signature_key = "pairing_event_options_signature"
+
+    event_options_signature = tuple(event_options)
+    current_selection = st.session_state.get(event_ids_key, [])
+    valid_selection = [event_id for event_id in current_selection if event_id in event_options]
+    previous_signature = st.session_state.get(signature_key)
+
+    if previous_signature != event_options_signature:
+        st.session_state[event_ids_key] = valid_selection
+        st.session_state[signature_key] = event_options_signature
+
+    if event_ids_key not in st.session_state:
+        st.session_state[event_ids_key] = []
+
+    return event_ids_key
+
+
 events = list_events()
 all_athletes = list_athletes(include_inactive=False)
 all_matches = list_matches()
@@ -45,127 +68,233 @@ if len(all_athletes) < 2:
     st.warning("Servono almeno due atleti attivi.")
     st.stop()
 
+events_map = {event.id: event for event in events}
+available_years = sorted({event.event_date.year for event in events})
+
+selected_event_ids: list[int] = []
+selected_years: list[int] = []
+
 st.subheader("Configurazione")
 
-selected_event = st.selectbox(
-    "Evento di riferimento",
-    options=events,
-    format_func=lambda e: f"{e.name} — {e.event_date}",
-)
+with st.expander("Filtri matchmaking", expanded=False):
+    tab_periodo, tab_profilo, tab_limiti, tab_vincoli = st.tabs(
+        [
+            "Periodo ed evento",
+            "Profilo atleti",
+            "Limiti differenze",
+            "Vincoli e penalità",
+        ]
+    )
 
-reference_date = selected_event.event_date
-event_dates = {event.id: event.event_date for event in events}
+    with tab_periodo:
+        period_col1, period_col2 = st.columns(2)
 
-relevant_matches = [
-    match
-    for match in all_matches
-    if event_dates.get(match.event_id) is not None
-    and event_dates[match.event_id] <= reference_date
-]
+        with period_col1:
+            if len(available_years) == 1:
+                st.caption(f"Anno disponibile: {available_years[0]}")
+                selected_year_range = (available_years[0], available_years[0])
+            else:
+                selected_year_range = st.slider(
+                    "Intervallo anni",
+                    min_value=available_years[0],
+                    max_value=available_years[-1],
+                    value=(available_years[0], available_years[-1]),
+                    step=1,
+                )
 
-styles = sorted({athlete.style for athlete in all_athletes})
-selected_style = st.selectbox("Stile", options=styles)
+            selected_years = list(
+                range(selected_year_range[0], selected_year_range[1] + 1)
+            )
 
-style_athletes = [athlete for athlete in all_athletes if athlete.style == selected_style]
+        with period_col2:
+            period_events = [
+                event
+                for event in events
+                if event.event_date.year in selected_years
+            ]
 
-if len(style_athletes) < 2:
-    st.warning("Non ci sono abbastanza atleti attivi per questo stile.")
-    st.stop()
+            event_options = [event.id for event in period_events]
+            event_ids_key = prepare_event_selection_state(event_options)
 
-sex_options = sorted({athlete.sex for athlete in style_athletes})
-selected_sexes = st.multiselect("Sesso", options=sex_options, default=sex_options)
+            if not event_options:
+                st.caption("Nessun evento disponibile per gli anni selezionati.")
+                selected_event_ids = []
+            else:
+                selected_event_ids = st.multiselect(
+                    "Evento/i di riferimento",
+                    options=event_options,
+                    key=event_ids_key,
+                    format_func=lambda event_id: event_label(events_map[event_id]),
+                    placeholder="Se vuoto, considera tutti gli eventi del periodo",
+                )
 
-level_options = sorted({get_level_label(athlete.level) for athlete in style_athletes})
-selected_levels = st.multiselect("Level", options=level_options, default=level_options)
-
-filtered_pool = [
-    athlete
-    for athlete in style_athletes
-    if athlete.sex in selected_sexes and get_level_label(athlete.level) in selected_levels
-]
-
-if len(filtered_pool) < 2:
-    st.warning("I filtri correnti lasciano meno di due atleti.")
-    st.stop()
-
-min_age = min(calculate_age(a.birth_date, reference_date) for a in filtered_pool)
-max_age = max(calculate_age(a.birth_date, reference_date) for a in filtered_pool)
-
-min_weight = min(float(a.default_weight) for a in filtered_pool)
-max_weight = max(float(a.default_weight) for a in filtered_pool)
-
-col1, col2 = st.columns(2)
-
-with col1:
-    if min_age == max_age:
-        st.caption(f"Età disponibile: {min_age}")
-        selected_age_range = (min_age, max_age)
-    else:
-        selected_age_range = st.slider(
-            "Fascia età",
-            min_value=min_age,
-            max_value=max_age,
-            value=(min_age, max_age),
-            step=1,
+        st.caption(
+            "Se il filtro evento è vuoto, il matchmaking considera tutti gli eventi inclusi nell’intervallo anni selezionato."
         )
 
-    level_diff_labels = {
-        "Solo stesso livello": 0,
-        "Max 1 fascia di differenza": 1,
-        "Max 2 fasce di differenza": 2,
-        "Max 3 fasce di differenza": 3,
-    }
+    period_events = [
+        event
+        for event in events
+        if event.event_date.year in selected_years
+    ]
 
-    selected_level_diff_label = st.selectbox(
-        "Differenza level massima per coppia",
-        options=list(level_diff_labels.keys()),
-        index=2,
-    )
-    max_pair_level_diff = level_diff_labels[selected_level_diff_label]
+    selected_scope_events = [
+        event
+        for event in period_events
+        if not selected_event_ids or event.id in selected_event_ids
+    ]
 
-with col2:
-    if min_weight == max_weight:
-        st.caption(f"Peso disponibile: {min_weight:.1f} kg")
-        selected_weight_range = (min_weight, max_weight)
-    else:
-        selected_weight_range = st.slider(
-            "Fascia peso di riferimento (kg)",
-            min_value=float(min_weight),
-            max_value=float(max_weight),
-            value=(float(min_weight), float(max_weight)),
-            step=0.5,
+    if not selected_scope_events:
+        st.warning("Nessun evento disponibile nel periodo selezionato.")
+        st.stop()
+
+    reference_date = max(event.event_date for event in selected_scope_events)
+    selected_scope_event_ids = {event.id for event in selected_scope_events}
+
+    relevant_matches = [
+        match
+        for match in all_matches
+        if match.event_id in selected_scope_event_ids
+    ]
+
+    styles = sorted({athlete.style for athlete in all_athletes})
+
+    with tab_profilo:
+        selected_style = st.selectbox("Stile", options=styles)
+
+        style_athletes = [
+            athlete for athlete in all_athletes if athlete.style == selected_style
+        ]
+
+        if len(style_athletes) < 2:
+            st.warning("Non ci sono abbastanza atleti attivi per questo stile.")
+            st.stop()
+
+        sex_options = sorted({athlete.sex for athlete in style_athletes})
+        level_options = sorted(
+            {get_level_label(athlete.level) for athlete in style_athletes}
         )
 
-    max_pair_weight_diff = st.number_input(
-        "Differenza peso massima per coppia (kg)",
-        min_value=0.0,
-        max_value=50.0,
-        value=10.0,
-        step=0.5,
-    )
+        profile_col1, profile_col2 = st.columns(2)
 
-    max_pair_age_diff = st.number_input(
-        "Differenza età massima per coppia",
-        min_value=0,
-        max_value=100,
-        value=8,
-        step=1,
-    )
+        with profile_col1:
+            selected_sexes = st.multiselect(
+                "Sesso",
+                options=sex_options,
+                default=sex_options,
+            )
 
-use_rating = st.checkbox(
-    "Usa rating nella compatibilità",
-    value=True,
-)
+        with profile_col2:
+            selected_levels = st.multiselect(
+                "Level",
+                options=level_options,
+                default=level_options,
+            )
 
-avoid_rematches = st.checkbox(
-    "Penalizza rematch",
-    value=True,
-)
+        filtered_pool = [
+            athlete
+            for athlete in style_athletes
+            if athlete.sex in selected_sexes
+            and get_level_label(athlete.level) in selected_levels
+        ]
 
-same_sex_only = st.checkbox(
-    "Accoppia solo atleti dello stesso sesso",
-    value=False,
-)
+        if len(filtered_pool) < 2:
+            st.warning("I filtri correnti lasciano meno di due atleti.")
+            st.stop()
+
+        min_age = min(calculate_age(a.birth_date, reference_date) for a in filtered_pool)
+        max_age = max(calculate_age(a.birth_date, reference_date) for a in filtered_pool)
+
+        min_weight = min(float(a.default_weight) for a in filtered_pool)
+        max_weight = max(float(a.default_weight) for a in filtered_pool)
+
+        profile_col3, profile_col4 = st.columns(2)
+
+        with profile_col3:
+            if min_age == max_age:
+                st.caption(f"Età disponibile: {min_age}")
+                selected_age_range = (min_age, max_age)
+            else:
+                selected_age_range = st.slider(
+                    "Fascia età",
+                    min_value=min_age,
+                    max_value=max_age,
+                    value=(min_age, max_age),
+                    step=1,
+                )
+
+        with profile_col4:
+            if min_weight == max_weight:
+                st.caption(f"Peso disponibile: {min_weight:.1f} kg")
+                selected_weight_range = (min_weight, max_weight)
+            else:
+                selected_weight_range = st.slider(
+                    "Fascia peso di riferimento (kg)",
+                    min_value=float(min_weight),
+                    max_value=float(max_weight),
+                    value=(float(min_weight), float(max_weight)),
+                    step=0.5,
+                )
+
+    with tab_limiti:
+        limits_col1, limits_col2 = st.columns(2)
+
+        level_diff_labels = {
+            "Solo stesso livello": 0,
+            "Max 1 fascia di differenza": 1,
+            "Max 2 fasce di differenza": 2,
+            "Max 3 fasce di differenza": 3,
+        }
+
+        with limits_col1:
+            selected_level_diff_label = st.selectbox(
+                "Differenza level massima per coppia",
+                options=list(level_diff_labels.keys()),
+                index=2,
+            )
+            max_pair_level_diff = level_diff_labels[selected_level_diff_label]
+
+            max_pair_age_diff = st.number_input(
+                "Differenza età massima per coppia",
+                min_value=0,
+                max_value=100,
+                value=8,
+                step=1,
+            )
+
+        with limits_col2:
+            max_pair_weight_diff = st.number_input(
+                "Differenza peso massima per coppia (kg)",
+                min_value=0.0,
+                max_value=100.0,
+                value=10.0,
+                step=0.5,
+            )
+
+    with tab_vincoli:
+        constraints_col1, constraints_col2 = st.columns(2)
+
+        with constraints_col1:
+            use_rating = st.checkbox(
+                "Usa rating nella compatibilità",
+                value=True,
+            )
+
+            avoid_rematches = st.checkbox(
+                "Penalizza rematch",
+                value=True,
+            )
+
+        with constraints_col2:
+            same_sex_only = st.checkbox(
+                "Accoppia solo atleti dello stesso sesso",
+                value=False,
+            )
+
+            exclude_same_team = st.checkbox(
+                "Escludi incontri tra membri dello stesso team",
+                value=False,
+            )
 
 age_min, age_max = selected_age_range
 weight_min, weight_max = selected_weight_range
@@ -211,6 +340,7 @@ candidates = generate_candidate_pairs(
     use_rating=use_rating,
     avoid_rematches=avoid_rematches,
     same_sex_only=same_sex_only,
+    exclude_same_team=exclude_same_team,
 )
 
 if not candidates:
@@ -219,12 +349,12 @@ if not candidates:
 
 selected_pairs, leftovers = select_greedy_pairings(candidates, selected_athletes)
 
-show_advanced = st.checkbox(
-    "Mostra dettagli avanzati",
+show_all_pairs = st.checkbox(
+    "Mostra tutti gli accoppiamenti",
     value=False,
 )
 
-st.subheader("Accoppiamenti suggeriti")
+st.subheader("Migliori accoppiamenti suggeriti")
 st.caption(
     "Le colonne 'Prob. A (%)' e 'Prob. B (%)' derivano dal rating Elo e indicano chi è favorito; "
     "l’indice mismatch invece misura quanto l’accoppiamento è equilibrato."
@@ -275,8 +405,8 @@ else:
 
     st.dataframe(display_selected_df, use_container_width=True, hide_index=True)
 
-if show_advanced:
-    st.subheader("Tutte le coppie candidate")
+if show_all_pairs:
+    st.subheader("Tutti gli accoppiamenti")
 
     candidate_rows = []
     for pair in candidates:

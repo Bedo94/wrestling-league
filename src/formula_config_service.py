@@ -3,6 +3,7 @@ from datetime import datetime
 import json
 from typing import Any, Dict, Optional
 
+from altair import value
 from sqlalchemy import select
 
 from src.database import get_session
@@ -13,6 +14,7 @@ from src.settings import (
     RATINGS_SETTINGS,
     SCORING_SETTINGS,
     TEAM_RANKING_SETTINGS,
+    ATHLETE_RANKING_SETTINGS,
 )
 from src.settings_defaults import (
     LEVEL_EVALUATION_SETTINGS_DEFAULTS,
@@ -20,6 +22,7 @@ from src.settings_defaults import (
     RATINGS_SETTINGS_DEFAULTS,
     SCORING_SETTINGS_DEFAULTS,
     TEAM_RANKING_SETTINGS_DEFAULTS,
+    ATHLETE_RANKING_SETTINGS_DEFAULTS,
 )
 
 
@@ -60,6 +63,7 @@ def get_all_defaults() -> Dict[str, Dict[str, Any]]:
         "ratings": deepcopy(RATINGS_SETTINGS_DEFAULTS),
         "team_ranking": deepcopy(TEAM_RANKING_SETTINGS_DEFAULTS),
         "level_evaluation": deepcopy(LEVEL_EVALUATION_SETTINGS_DEFAULTS),
+        "athlete_ranking": deepcopy(ATHLETE_RANKING_SETTINGS_DEFAULTS),
     }
 
 
@@ -88,6 +92,8 @@ def load_config() -> None:
                 TEAM_RANKING_SETTINGS[key] = value
             elif group == "level_evaluation" and key in LEVEL_EVALUATION_SETTINGS:
                 LEVEL_EVALUATION_SETTINGS[key] = value
+            elif group == "athlete_ranking" and key in ATHLETE_RANKING_SETTINGS:
+                ATHLETE_RANKING_SETTINGS[key] = value
     finally:
         session.close()
 

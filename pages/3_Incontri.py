@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 
 import pandas as pd
@@ -38,12 +39,22 @@ MATCH_IS_TOKEN_MATCH_KEY = "match_is_token_match"
 MATCH_TOKEN_SPENDER_CHOICE_KEY = "match_token_spender_choice"
 
 
-def athlete_label(athlete) -> str:
+def calculate_age(birth_date: date, reference_date: date) -> int:
+    age = reference_date.year - birth_date.year
+    if (reference_date.month, reference_date.day) < (birth_date.month, birth_date.day):
+        age -= 1
+    return age
+
+
+def athlete_label(athlete, reference_date: date) -> str:
     full_name = f"{athlete.first_name} {athlete.last_name or ''}".strip()
     inactive_suffix = " (inattivo)" if not athlete.active else ""
+    age = calculate_age(athlete.birth_date, reference_date)
+    team_label = (athlete.team or "").strip() or "Senza team"
+
     return (
         f"{full_name}{inactive_suffix} — {athlete.style} — "
-        f"{athlete.default_weight:.1f} kg — {get_level_label(athlete.level)}"
+        f"{athlete.default_weight:.1f} kg — {age} anni — {team_label}"
     )
 
 
@@ -324,31 +335,28 @@ selected_event_id = st.selectbox(
     key=MATCH_EVENT_ID_KEY,
 )
 
-selected_athlete_a_id = st.selectbox(
-    "Atleta A *",
-    options=athlete_ids,
-    format_func=lambda athlete_id: athlete_label(athletes_map[athlete_id]),
-    key=MATCH_ATHLETE_A_ID_KEY,
-    on_change=sync_weight_a_from_selected_athlete,
-    args=(athletes_map,),
-)
-
-selected_athlete_b_id = st.selectbox(
-    "Atleta B *",
-    options=athlete_ids,
-    format_func=lambda athlete_id: athlete_label(athletes_map[athlete_id]),
-    key=MATCH_ATHLETE_B_ID_KEY,
-    on_change=sync_weight_b_from_selected_athlete,
-    args=(athletes_map,),
-)
-
 selected_event = events_map[selected_event_id]
-athlete_a = athletes_map[selected_athlete_a_id]
-athlete_b = athletes_map[selected_athlete_b_id]
+reference_date_for_labels = selected_event.event_date
 
-col1, col2 = st.columns(2)
+athlete_col1, athlete_col2 = st.columns(2)
 
-with col1:
+with athlete_col1:
+    st.markdown("#### Atleta A")
+
+    selected_athlete_a_id = st.selectbox(
+        "Seleziona atleta A *",
+        options=athlete_ids,
+        format_func=lambda athlete_id: athlete_label(
+            athletes_map[athlete_id],
+            reference_date=reference_date_for_labels,
+        ),
+        key=MATCH_ATHLETE_A_ID_KEY,
+        on_change=sync_weight_a_from_selected_athlete,
+        args=(athletes_map,),
+    )
+
+    athlete_a = athletes_map[selected_athlete_a_id]
+
     weight_a = st.number_input(
         "Peso atleta A (kg) *",
         min_value=1.0,
@@ -356,6 +364,7 @@ with col1:
         step=0.5,
         key=MATCH_WEIGHT_A_KEY,
     )
+
     raw_score_a = st.number_input(
         "Punti atleta A *",
         min_value=0.0,
@@ -364,7 +373,23 @@ with col1:
         key=MATCH_RAW_SCORE_A_KEY,
     )
 
-with col2:
+with athlete_col2:
+    st.markdown("#### Atleta B")
+
+    selected_athlete_b_id = st.selectbox(
+        "Seleziona atleta B *",
+        options=athlete_ids,
+        format_func=lambda athlete_id: athlete_label(
+            athletes_map[athlete_id],
+            reference_date=reference_date_for_labels,
+        ),
+        key=MATCH_ATHLETE_B_ID_KEY,
+        on_change=sync_weight_b_from_selected_athlete,
+        args=(athletes_map,),
+    )
+
+    athlete_b = athletes_map[selected_athlete_b_id]
+
     weight_b = st.number_input(
         "Peso atleta B (kg) *",
         min_value=1.0,
@@ -372,6 +397,7 @@ with col2:
         step=0.5,
         key=MATCH_WEIGHT_B_KEY,
     )
+
     raw_score_b = st.number_input(
         "Punti atleta B *",
         min_value=0.0,
@@ -380,16 +406,36 @@ with col2:
         key=MATCH_RAW_SCORE_B_KEY,
     )
 
-st.caption(f"Stile atleta A: {athlete_a.style}")
-st.caption(f"Stile atleta B: {athlete_b.style}")
 st.caption(f"Stagione evento: {selected_event.season}")
 
-winner_choice = st.radio(
-    "Vincitore *",
-    options=["Atleta A", "Atleta B"],
-    horizontal=True,
-    key=MATCH_WINNER_CHOICE_KEY,
-)
+winner_col1, winner_col2 = st.columns(2)
+current_winner_choice = st.session_state.get(MATCH_WINNER_CHOICE_KEY, "Atleta A")
+
+with winner_col1:
+    st.markdown("#### Esito atleta A")
+    if st.button(
+        f"Vince {format_athlete_name(athlete_a)}",
+        type="primary" if current_winner_choice == "Atleta A" else "secondary",
+        use_container_width=True,
+        key="winner_button_a",
+    ):
+        if st.session_state.get(MATCH_WINNER_CHOICE_KEY) != "Atleta A":
+            st.session_state[MATCH_WINNER_CHOICE_KEY] = "Atleta A"
+            st.rerun()
+
+with winner_col2:
+    st.markdown("#### Esito atleta B")
+    if st.button(
+        f"Vince {format_athlete_name(athlete_b)}",
+        type="primary" if current_winner_choice == "Atleta B" else "secondary",
+        use_container_width=True,
+        key="winner_button_b",
+    ):
+        if st.session_state.get(MATCH_WINNER_CHOICE_KEY) != "Atleta B":
+            st.session_state[MATCH_WINNER_CHOICE_KEY] = "Atleta B"
+            st.rerun()
+
+winner_choice = st.session_state.get(MATCH_WINNER_CHOICE_KEY, "Atleta A")
 
 win_type = st.selectbox(
     "Modo di vittoria *",

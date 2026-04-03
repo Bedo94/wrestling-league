@@ -44,6 +44,10 @@ def describe_previous_matches(previous_matches: int) -> str:
     return f"{previous_matches} precedenti"
 
 
+def normalize_team_name(team: str | None) -> str:
+    return (team or "").strip().casefold()
+
+
 def generate_candidate_pairs(
     athletes: list[Athlete],
     matches: list[Match],
@@ -54,6 +58,7 @@ def generate_candidate_pairs(
     use_rating: bool = True,
     avoid_rematches: bool = True,
     same_sex_only: bool = False,
+    exclude_same_team: bool = False,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
 
@@ -70,6 +75,11 @@ def generate_candidate_pairs(
                 continue
 
             if same_sex_only and athlete_a.sex != athlete_b.sex:
+                continue
+
+            team_a = normalize_team_name(getattr(athlete_a, "team", None))
+            team_b = normalize_team_name(getattr(athlete_b, "team", None))
+            if exclude_same_team and team_a and team_b and team_a == team_b:
                 continue
 
             weight_diff = abs(float(athlete_a.default_weight) - float(athlete_b.default_weight))
