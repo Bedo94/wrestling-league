@@ -39,6 +39,72 @@ def _normalize_birth_date(value: Any) -> date:
     raise ValueError("Data nascita non valida.")
 
 
+def get_token_reset_scope() -> str:
+    scope = str(TOKEN_SETTINGS.get("reset_scope", "event")).strip().lower()
+    if scope not in {"event", "season"}:
+        raise ValueError(f"Token reset_scope non valido: {scope}")
+    return scope
+
+
+def get_token_scope_label(
+    *,
+    season: Optional[str] = None,
+    event_id: Optional[int] = None,
+) -> str:
+    scope = get_token_reset_scope()
+
+    if scope == "event":
+        if event_id is None:
+            return "questo evento"
+        return f"questo evento (ID {event_id})"
+
+    if season is None:
+        return "questa stagione"
+    return f"la stagione {season}"
+
+
+def _get_tokens_used_in_event(
+    session,
+    athlete_id: int,
+    event_id: int,
+    exclude_match_id: Optional[int] = None,
+) -> int:
+    stmt = select(func.coalesce(func.sum(Match.token_cost), 0)).where(
+        Match.is_token_match.is_(True),
+        Match.token_spender_id == athlete_id,
+        Match.event_id == event_id,
+    )
+
+    if exclude_match_id is not None:
+        stmt = stmt.where(Match.id != exclude_match_id)
+
+    total = session.execute(stmt).scalar_one()
+    return int(total or 0)
+
+
+def _get_tokens_used_in_season(
+    session,
+    athlete_id: int,
+    season: str,
+    exclude_match_id: Optional[int] = None,
+) -> int:
+    stmt = (
+        select(func.coalesce(func.sum(Match.token_cost), 0))
+        .join(Event, Match.event_id == Event.id)
+        .where(
+            Match.is_token_match.is_(True),
+            Match.token_spender_id == athlete_id,
+            Event.season == season,
+        )
+    )
+
+    if exclude_match_id is not None:
+        stmt = stmt.where(Match.id != exclude_match_id)
+
+    total = session.execute(stmt).scalar_one()
+    return int(total or 0)
+
+
 def create_athlete(
     first_name: str,
     last_name: Optional[str],
@@ -104,9 +170,11 @@ def list_teams() -> list[str]:
         session.close()
 
 
-def get_tokens_remaining_for_season(
+def get_tokens_remaining(
     athlete_id: int,
-    season: str,
+    *,
+    season: Optional[str] = None,
+    event_id: Optional[int] = None,
     exclude_match_id: Optional[int] = None,
 ) -> int:
     session = get_session()
@@ -115,24 +183,49 @@ def get_tokens_remaining_for_season(
         if athlete is None:
             return 0
 
-        stmt = (
-            select(func.coalesce(func.sum(Match.token_cost), 0))
-            .join(Event, Match.event_id == Event.id)
-            .where(
-                Match.is_token_match.is_(True),
-                Match.token_spender_id == athlete_id,
-                Event.season == season,
+        scope = get_token_reset_scope()
+
+        if scope == "event":
+            if event_id is None:
+                raise ValueError(
+                    "event_id obbligatorio quando TOKEN_SETTINGS['reset_scope'] = 'event'."
+                )
+
+            used_tokens = _get_tokens_used_in_event(
+                session=session,
+                athlete_id=athlete_id,
+                event_id=event_id,
+                exclude_match_id=exclude_match_id,
             )
-        )
+        else:
+            if season is None:
+                raise ValueError(
+                    "season obbligatoria quando TOKEN_SETTINGS['reset_scope'] = 'season'."
+                )
 
-        if exclude_match_id is not None:
-            stmt = stmt.where(Match.id != exclude_match_id)
+            used_tokens = _get_tokens_used_in_season(
+                session=session,
+                athlete_id=athlete_id,
+                season=season,
+                exclude_match_id=exclude_match_id,
+            )
 
-        used_tokens = session.execute(stmt).scalar_one()
         remaining = int(athlete.token_budget) - int(used_tokens or 0)
         return max(0, remaining)
     finally:
         session.close()
+
+
+def get_tokens_remaining_for_season(
+    athlete_id: int,
+    season: str,
+    exclude_match_id: Optional[int] = None,
+) -> int:
+    return get_tokens_remaining(
+        athlete_id,
+        season=season,
+        exclude_match_id=exclude_match_id,
+    )
 
 
 def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:

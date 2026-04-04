@@ -87,3 +87,9 @@ ATHLETE_RANKING_SETTINGS_DEFAULTS = {
     "ranking_method": "cumulative",
     "min_matches_for_average": 2,
 }
+
+TOKEN_SETTINGS_DEFAULTS = {
+    "default_token_budget_per_season": 4,
+    "default_token_cost": 1,
+    "reset_scope": "event",
+}

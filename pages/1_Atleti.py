@@ -17,9 +17,9 @@ from src.ratings import recompute_ratings
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
 from src.settings import TOKEN_SETTINGS
 
-ATHLETES_UPDATE_SUCCESS_KEY = "athletes_update_success_message"
-
 bootstrap_database_from_state()
+
+ATHLETES_UPDATE_SUCCESS_KEY = "athletes_update_success_message"
 
 st.title("Atleti")
 
@@ -30,7 +30,7 @@ Il campo **livello** rappresenta una stima iniziale manuale del livello tecnico.
 Il campo **rating** rappresenta invece una valutazione dinamica, calcolata in base
 ai risultati ottenuti.
 
-Il campo **token budget** rappresenta quanti token l'atleta può spendere per stagione.
+Il campo **token budget** rappresenta quanti token l'atleta può spendere.
 """
 )
 

@@ -8,7 +8,7 @@ from src.models import Athlete, Event, Match
 from src.reference_data import WIN_TYPE_OPTIONS
 from src.scoring import calculate_match_points
 from src.settings import TOKEN_SETTINGS
-
+from src.athletes import get_token_reset_scope
 
 def _validate_match_inputs(
     athlete_a_id: int,
@@ -58,6 +58,25 @@ def _normalize_token_fields(
     return True, token_spender_id, token_cost
 
 
+def _get_tokens_used_in_event(
+    session,
+    athlete_id: int,
+    event_id: int,
+    exclude_match_id: Optional[int] = None,
+) -> int:
+    stmt = select(func.coalesce(func.sum(Match.token_cost), 0)).where(
+        Match.is_token_match.is_(True),
+        Match.token_spender_id == athlete_id,
+        Match.event_id == event_id,
+    )
+
+    if exclude_match_id is not None:
+        stmt = stmt.where(Match.id != exclude_match_id)
+
+    total = session.execute(stmt).scalar_one()
+    return int(total or 0)
+
+
 def _get_tokens_used_in_season(
     session,
     athlete_id: int,
@@ -85,7 +104,9 @@ def _validate_token_usage(
     session,
     athlete_a_id: int,
     athlete_b_id: int,
-    season: str,
+    *,
+    season: Optional[str],
+    event_id: Optional[int],
     is_token_match: bool,
     token_spender_id: Optional[int],
     token_cost: int,
@@ -107,19 +128,37 @@ def _validate_token_usage(
         raise ValueError("Atleta che spende il token non trovato.")
 
     assert token_spender_id is not None
-    used_tokens = _get_tokens_used_in_season(
-        session=session,
-        athlete_id=token_spender_id,
-        season=season,
-        exclude_match_id=exclude_match_id,
-    )
+    scope = get_token_reset_scope()
+
+    if scope == "event":
+        if event_id is None:
+            raise ValueError("event_id obbligatorio per validare i token con reset_scope='event'.")
+
+        used_tokens = _get_tokens_used_in_event(
+            session=session,
+            athlete_id=token_spender_id,
+            event_id=event_id,
+            exclude_match_id=exclude_match_id,
+        )
+        scope_label = "questo evento"
+    else:
+        if season is None:
+            raise ValueError("season obbligatoria per validare i token con reset_scope='season'.")
+
+        used_tokens = _get_tokens_used_in_season(
+            session=session,
+            athlete_id=token_spender_id,
+            season=season,
+            exclude_match_id=exclude_match_id,
+        )
+        scope_label = f"la stagione {season}"
 
     remaining_tokens = int(token_spender.token_budget) - used_tokens
     if remaining_tokens < token_cost:
         raise ValueError(
-            f"{token_spender.first_name} non ha abbastanza token disponibili per la stagione {season}."
+            f"{token_spender.first_name} non ha abbastanza token disponibili per {scope_label}."
         )
-
+    
     return True, token_spender_id, token_cost
 
 
@@ -365,6 +404,7 @@ def create_match(
             athlete_a_id=athlete_a_id,
             athlete_b_id=athlete_b_id,
             season=event.season,
+            event_id=event.id,
             is_token_match=is_token_match,
             token_spender_id=token_spender_id,
             token_cost=token_cost,
@@ -412,6 +452,7 @@ def create_match(
         session.add(match)
         session.commit()
         session.refresh(match)
+        session.expunge(match)
         return match
     finally:
         session.close()
@@ -473,6 +514,7 @@ def replace_match(
                 athlete_a_id=athlete_a_id,
                 athlete_b_id=athlete_b_id,
                 season=event.season,
+                event_id=event.id,
                 is_token_match=is_token_match,
                 token_spender_id=token_spender_id,
                 token_cost=token_cost,
@@ -520,8 +562,9 @@ def replace_match(
             )
 
             session.flush()
-            session.refresh(existing_match)
 
+        session.refresh(existing_match)
+        session.expunge(existing_match)
         return existing_match
     finally:
         session.close()
