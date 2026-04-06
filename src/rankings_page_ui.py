@@ -51,8 +51,261 @@ def _normalize_choice(value: str, allowed_values: set[str], fallback: str) -> st
         return value
     return fallback
 
+def prepare_athlete_rankings_display_df(
+    *,
+    rankings_df: pd.DataFrame,
+    ranking_method: str,
+    min_matches_for_average: int,
+) -> tuple[pd.DataFrame, str]:
+    filtered_df = rankings_df.copy()
+
+    if filtered_df.empty:
+        return pd.DataFrame(), ""
+
+    if filtered_df["matches"].sum() == 0:
+        filtered_df = filtered_df.sort_values(
+            by=["rating", "name"],
+            ascending=[False, True],
+        ).reset_index(drop=True)
+        filtered_df["rank"] = filtered_df.index + 1
+        filtered_df["is_provisional"] = False
+    else:
+        ranking_rows: list[dict[str, Any]] = [
+            {str(k): v for k, v in row.items()}
+            for row in filtered_df.to_dict(orient="records")
+        ]
+
+        sorted_rows = sort_ranking_rows(
+            ranking_rows,
+            ranking_method=ranking_method,
+            min_matches_for_average=min_matches_for_average,
+        )
+        filtered_df = pd.DataFrame(sorted_rows)
+
+    filtered_df["Posizione"] = filtered_df["rank"]
+    filtered_df["Rating"] = filtered_df["rating"].apply(
+        lambda x: x if x is not None else "N.D."
+    )
+    filtered_df["Data nascita"] = filtered_df["birth_date"].apply(
+        lambda d: d.strftime("%d/%m/%Y")
+    )
+
+    if ranking_method == "average_per_match":
+        filtered_df["Provvisorio"] = filtered_df["is_provisional"].apply(
+            lambda x: "Sì" if x else ""
+        )
+    else:
+        filtered_df["Provvisorio"] = ""
+
+    display_columns = [
+        "Posizione",
+        "name",
+        "nickname",
+        "team",
+        "style",
+        "sex",
+        "age",
+        "default_weight",
+        "level_label",
+        "Rating",
+        "matches",
+        "wins",
+        "losses",
+        "class_points_total",
+        "avg_class_points",
+        "technical_points_for",
+        "technical_points_against",
+        "technical_diff",
+        "Data nascita",
+    ]
+
+    if ranking_method == "average_per_match":
+        display_columns.insert(15, "Provvisorio")
+
+    display_df = filtered_df[display_columns].rename(
+        columns={
+            "name": "Atleta",
+            "nickname": "Nickname",
+            "team": "Team",
+            "style": "Stile",
+            "sex": "Sesso",
+            "age": "Età",
+            "default_weight": "Peso rif.",
+            "level_label": "Level",
+            "matches": "Incontri",
+            "wins": "Vittorie",
+            "losses": "Sconfitte",
+            "class_points_total": "Punti classifica",
+            "avg_class_points": "Media punti",
+            "technical_points_for": "Punti fatti",
+            "technical_points_against": "Punti subiti",
+            "technical_diff": "Differenza punti",
+        }
+    )
+
+    if filtered_df["matches"].sum() == 0:
+        caption = "Ordinamento: in assenza di incontri, rating iniziale; a parità, nome."
+    elif ranking_method == "average_per_match":
+        caption = (
+            f"Ordinamento atleti: prima gli atleti con almeno {min_matches_for_average} incontri, "
+            "poi media punti, vittorie, differenza punti tecnici, punti fatti e punti classifica."
+        )
+    else:
+        caption = (
+            "Ordinamento atleti: punti classifica, poi vittorie, poi differenza punti tecnici, poi punti fatti."
+        )
+
+    return display_df, caption
+
+
+def render_athlete_rankings_table(
+    *,
+    rankings_df: pd.DataFrame,
+    ranking_method: str,
+    min_matches_for_average: int,
+    key: str,
+) -> None:
+    display_df, caption = prepare_athlete_rankings_display_df(
+        rankings_df=rankings_df,
+        ranking_method=ranking_method,
+        min_matches_for_average=min_matches_for_average,
+    )
+
+    if display_df.empty:
+        st.info("Non ci sono ancora dati sufficienti per mostrare la classifica.")
+        return
+
+    athlete_rankings_spec = build_athlete_rankings_table_spec(display_df=display_df)
+
+    render_table_component(
+        df=display_df,
+        spec=athlete_rankings_spec,
+        renderer="aggrid",
+        key=key,
+    )
+
+    if caption:
+        st.caption(caption)
+
+
+def prepare_team_rankings_display_df(
+    *,
+    rankings_df: pd.DataFrame,
+    ranking_method: str,
+    participation_bonus_per_athlete: float,
+) -> tuple[pd.DataFrame, str]:
+    if rankings_df.empty:
+        return pd.DataFrame(), ""
+
+    ranking_rows: list[dict[str, Any]] = [
+        {str(k): v for k, v in row.items()}
+        for row in rankings_df.to_dict(orient="records")
+    ]
+
+    team_rows = build_team_rankings(
+        ranking_rows=ranking_rows,
+        participation_bonus_per_athlete=participation_bonus_per_athlete,
+        ranking_method=ranking_method,
+    )
+
+    if not team_rows:
+        return pd.DataFrame(), ""
+
+    team_df = pd.DataFrame(team_rows).rename(
+        columns={
+            "rank": "Posizione",
+            "team": "Team",
+            "athletes_count": "Atleti nel filtro",
+            "participating_athletes": "Atleti partecipanti",
+            "matches": "Incontri",
+            "wins": "Vittorie",
+            "losses": "Sconfitte",
+            "class_points_total": "Punti classifica",
+            "participation_bonus": "Bonus partecipazione",
+            "team_score": "Punteggio team",
+            "avg_points_per_participating_athlete": "Media punti/partecipante",
+            "technical_points_for": "Punti fatti",
+            "technical_points_against": "Punti subiti",
+            "technical_diff": "Differenza punti",
+        }
+    )
+
+    display_team_columns = [
+        "Posizione",
+        "Team",
+        "Atleti nel filtro",
+        "Atleti partecipanti",
+        "Incontri",
+        "Vittorie",
+        "Sconfitte",
+        "Punti classifica",
+    ]
+
+    if ranking_method == "sum_with_bonus":
+        display_team_columns.extend(
+            [
+                "Bonus partecipazione",
+                "Punteggio team",
+            ]
+        )
+        caption = (
+            f"Classifica team attiva: somma punti atleti + bonus partecipazione "
+            f"({participation_bonus_per_athlete:.2f} per atleta partecipante)."
+        )
+    else:
+        display_team_columns.extend(
+            [
+                "Media punti/partecipante",
+                "Punteggio team",
+            ]
+        )
+        caption = "Classifica team attiva: media punti per atleta partecipante."
+
+    display_team_columns.extend(
+        [
+            "Punti fatti",
+            "Punti subiti",
+            "Differenza punti",
+        ]
+    )
+
+    display_team_df = team_df[display_team_columns].copy()
+    return display_team_df, caption
+
+
+def render_team_rankings_table(
+    *,
+    rankings_df: pd.DataFrame,
+    ranking_method: str,
+    participation_bonus_per_athlete: float,
+    key: str,
+) -> bool:
+    display_team_df, caption = prepare_team_rankings_display_df(
+        rankings_df=rankings_df,
+        ranking_method=ranking_method,
+        participation_bonus_per_athlete=participation_bonus_per_athlete,
+    )
+
+    if display_team_df.empty:
+        return False
+
+    team_rankings_spec = build_team_rankings_table_spec(display_df=display_team_df)
+
+    render_table_component(
+        df=display_team_df,
+        spec=team_rankings_spec,
+        renderer="aggrid",
+        key=key,
+    )
+
+    if caption:
+        st.caption(caption)
+
+    return True
+
 
 def render_rankings_panel(
+
     *,
     state_prefix: str,
     title: str | None = None,

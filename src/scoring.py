@@ -1,6 +1,24 @@
 from datetime import date
+from typing import TypedDict
 
 from src.settings import SCORING_SETTINGS
+
+
+class MatchPointsPreview(TypedDict):
+    weight_factor_a: float
+    weight_factor_b: float
+    special_factor_a: float
+    special_factor_b: float
+    result_base_a: float
+    result_base_b: float
+    performance_bonus_a: float
+    performance_bonus_b: float
+    finish_bonus_a: float
+    finish_bonus_b: float
+    pre_multiplier_a: float
+    pre_multiplier_b: float
+    total_points_a: float
+    total_points_b: float
 
 
 def validate_weight_difference(weight_a: float, weight_b: float) -> None:
@@ -116,7 +134,7 @@ def calculate_match_points(
     athlete_a_birth_date: date,
     athlete_b_birth_date: date,
     event_date: date,
-) -> dict:
+) -> MatchPointsPreview:
     validate_weight_difference(weight_a, weight_b)
 
     if winner_id not in {athlete_a_id, athlete_b_id}:

@@ -129,11 +129,6 @@ def render_events_page() -> None:
         """
         Questa pagina serve per registrare le giornate della league o eventuali eventi speciali.
 
-        Per ora ogni evento ha:
-        - nome
-        - data
-        - stagione (dedotta automaticamente dall'anno)
-        - note
         """
     )
 

@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 import streamlit as st
@@ -17,10 +17,18 @@ from src.matchmaking_probability_ui import render_win_probability_metrics
 from src.matches import recompute_all_match_scores
 from src.models import Athlete, Match
 from src.pairing import calculate_age, generate_candidate_pairs
-from src.rankings import build_rankings, build_team_rankings
-from src.rankings_ui import render_rankings_panel
-from src.ratings import recompute_ratings
+from src.rankings import build_rankings
 from src.scoring import calculate_match_points, get_age_at_event
+from src.ratings import get_start_rating, preview_rating_update, recompute_ratings
+from src.table_component import render_table_component
+from src.table_specs import (
+    build_athlete_rankings_table_spec,
+    build_team_rankings_table_spec,
+)
+from src.rankings_page_ui import (
+    render_athlete_rankings_table,
+    render_team_rankings_table,
+)
 
 FLASH_MESSAGE_KEY = "admin_formulas_flash_message"
 PENDING_RESET_GROUP_KEY = "admin_formulas_pending_reset_group"
@@ -194,6 +202,30 @@ def render_group_inputs(
 
     return inputs
 
+def format_athlete_preview_label(
+    athlete: Athlete,
+    reference_date: date,
+) -> str:
+    full_name = f"{athlete.first_name} {athlete.last_name or ''}".strip()
+    age = calculate_age(athlete.birth_date, reference_date)
+    team = athlete.team or "—"
+
+    return (
+        f"{full_name} - "
+        f"{athlete.style} - "
+        f"{float(athlete.default_weight):.1f} kg - "
+        f"{age} anni - "
+        f"{team}"
+    )
+
+
+def format_winner_fallback_label(value: str | None) -> str:
+    if value == "A":
+        return "Atleta A"
+    if value == "B":
+        return "Atleta B"
+    return "Nessun vincitore / pareggio"
+
 
 def render_athlete_ranking_section() -> None:
     config = get_full_config()
@@ -213,10 +245,19 @@ def render_athlete_ranking_section() -> None:
         athlete_ranking_config.get("min_matches_for_average", 2)
     )
 
-    st.markdown("### Classifica atleti")
+    st.markdown(
+        """
+La classifica atleti ordina gli atleti in base ai **punti classifica** accumulati nei match.
+
+Puoi scegliere se privilegiare:
+- il totale punti accumulato
+- la media punti per incontro
+"""
+    )
+
     st.markdown(
         r"""
-Puoi ordinare la classifica atleti in due modi.
+Sono disponibili due metodi alternativi.
 
 #### Metodo 1 — Cumulativa
 $$
@@ -227,11 +268,23 @@ $$
 $$
 ranking\_score = \frac{class\_points\_total}{matches}
 $$
-
-Nel metodo a media, gli atleti con meno di `min_matches_for_average`
-possono essere considerati **provvisori**.
 """
     )
+
+    with st.expander("Interpretazione intuitiva dei metodi"):
+        st.markdown(
+            """
+- **Cumulativa**  
+  premia chi accumula più punti nel tempo
+
+- **Media punti/incontro**  
+  premia l'efficienza media per match disputato
+
+- **Minimo incontri per classifica media**  
+  serve a segnalare come **provvisori** gli atleti con pochi incontri,
+  così la media non diventa fuorviante
+"""
+        )
 
     method_widget_key = "athlete_ranking_ranking_method"
     min_matches_widget_key = "athlete_ranking_min_matches_for_average"
@@ -339,39 +392,12 @@ possono essere considerati **provvisori**.
         render_flash_message("athlete_ranking")
         return
 
-    preview_df = pd.DataFrame(preview_rows)
-    preview_df["Provvisorio"] = preview_df["is_provisional"].apply(
-        lambda x: "Sì" if x else ""
-    )
-
     st.write("**Anteprima classifica atleti**")
-    st.dataframe(
-        preview_df[
-            [
-                "rank",
-                "name",
-                "team",
-                "matches",
-                "wins",
-                "class_points_total",
-                "avg_class_points",
-                "ranking_score",
-                "Provvisorio",
-            ]
-        ].rename(
-            columns={
-                "rank": "Posizione",
-                "name": "Atleta",
-                "team": "Team",
-                "matches": "Incontri",
-                "wins": "Vittorie",
-                "class_points_total": "Punti classifica",
-                "avg_class_points": "Media punti",
-                "ranking_score": "Ranking score",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
+    render_athlete_rankings_table(
+        rankings_df=pd.DataFrame(preview_rows),
+        ranking_method=preview_method,
+        min_matches_for_average=preview_min_matches,
+        key="admin_athlete_rankings_preview_table",
     )
 
     render_flash_message("athlete_ranking")
@@ -401,7 +427,16 @@ def render_team_ranking_section() -> None:
         float,
     )
 
-    st.markdown("### Classifica team")
+    st.markdown(
+        """
+La classifica team aggrega i **punti classifica** ottenuti dagli atleti per confrontare le squadre.
+
+Puoi scegliere se privilegiare:
+- il contributo totale del team
+- la resa media per atleta partecipante
+"""
+    )
+
     st.markdown(
         r"""
 Sono disponibili due metodi alternativi.
@@ -415,10 +450,21 @@ $$
 $$
 team\_score = \frac{class\_points\_total}{participating\_athletes}
 $$
+"""
+    )
+
+    with st.expander("Interpretazione intuitiva dei metodi"):
+        st.markdown(
+            """
+- **Somma punti atleti + bonus partecipazione**  
+  premia sia il rendimento sia la presenza numerosa del team
+
+- **Media punti per atleta partecipante**  
+  misura l'efficienza media del team, indipendentemente dalla dimensione
 
 Nel secondo metodo il bonus partecipazione non entra nel punteggio finale.
 """
-    )
+        )
 
     method_widget_key = "team_ranking_ranking_method"
     bonus_widget_key = "team_ranking_participation_bonus_per_athlete"
@@ -521,40 +567,24 @@ Nel secondo metodo il bonus partecipazione non entra nel punteggio finale.
         reference_date=date.today(),
         ranking_method="cumulative",
     )
-    team_rows = build_team_rankings(
-        ranking_rows=ranking_rows,
-        participation_bonus_per_athlete=float(preview_participation_bonus),
-        ranking_method=str(preview_ranking_method),
-    )
 
-    team_rows = [
-        row for row in team_rows
-        if row["participating_athletes"] > 0 or row["class_points_total"] > 0
-    ]
+    rankings_df = pd.DataFrame(ranking_rows)
 
-    if not team_rows:
+    if rankings_df.empty:
         st.info("Non ci sono ancora dati sufficienti per mostrare l'anteprima team.")
         render_flash_message("team_ranking")
         return
 
-    preview_df = pd.DataFrame(
-        [
-            {
-                "Rank": row["rank"],
-                "Team": row["team"],
-                "Metodo": ranking_method_options.get(row["ranking_method"], row["ranking_method"]),
-                "Atleti partecipanti": row["participating_athletes"],
-                "Punti atleti": row["class_points_total"],
-                "Bonus partecipazione": row["participation_bonus"],
-                "Media punti/atleta": row["avg_points_per_participating_athlete"],
-                "Team score": row["team_score"],
-            }
-            for row in team_rows
-        ]
+    st.write("**Anteprima classifica team**")
+    rendered = render_team_rankings_table(
+        rankings_df=rankings_df,
+        ranking_method=str(preview_ranking_method),
+        participation_bonus_per_athlete=float(preview_participation_bonus),
+        key="admin_team_rankings_preview_table",
     )
 
-    st.write("**Anteprima classifica team**")
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+    if not rendered:
+        st.info("Non ci sono ancora dati sufficienti per mostrare l'anteprima team.")
 
     render_flash_message("team_ranking")
 
@@ -565,17 +595,59 @@ def render_rating_tab() -> None:
 
     apply_pending_reset("ratings", "rating")
 
-    logistic_divisor = get_typed_value(
+    current_default_start_rating = get_typed_value(
+        rating_config,
+        "default_start_rating",
+        1000.0,
+        float,
+    )
+    current_k_factor = get_typed_value(
+        rating_config,
+        "k_factor",
+        32.0,
+        float,
+    )
+    current_logistic_divisor = get_typed_value(
         rating_config,
         "logistic_divisor",
         400.0,
         float,
     )
+    current_normal_match_impact = get_typed_value(
+        rating_config,
+        "normal_match_impact",
+        1.0,
+        float,
+    )
+    current_retirement_match_impact = get_typed_value(
+        rating_config,
+        "retirement_match_impact",
+        0.6,
+        float,
+    )
+    current_forfeit_match_impact = get_typed_value(
+        rating_config,
+        "forfeit_match_impact",
+        0.3,
+        float,
+    )
 
-    st.subheader("Formula rating (Elo modificato)")
+    st.subheader("Rating dinamico per matchmaking")
+
+    st.info(
+        """
+Il rating **non determina la classifica finale**.
+
+Serve invece a:
+- stimare chi è favorito tra due atleti
+- aggiornare la forza competitiva dopo ogni match
+- contribuire al matchmaking e alla probabilità attesa delle anteprime
+"""
+    )
+
     st.markdown(
         fr"""
-Il rating di un atleta viene aggiornato dopo ogni incontro secondo la formula:
+L'aggiornamento rating usa una formula tipo Elo:
 
 $$
 E_A = \frac{{1}}{{1 + 10^{{(R_B - R_A)/D}}}}
@@ -587,55 +659,45 @@ $$
 
 dove:
 
-- $R_A$ e $R_B$ sono i rating pre-match dei due atleti
+- $R_A$ e $R_B$ sono i rating pre-match
 - $E_A$ è il punteggio atteso dell'atleta A
 - $S_A$ è il punteggio effettivo dell'atleta A
 - $K$ è il `k_factor`
 - $I$ è l'`impact` del match
-- D è il divisore logistico `logistic_divisor = {logistic_divisor:g}`
+- $D$ è il divisore logistico `logistic_divisor = {current_logistic_divisor:g}`
 """
     )
 
-    st.markdown(
-        """
-**Che cos'è il punteggio atteso**
-- se due atleti hanno rating simile, il punteggio atteso è vicino a `0.5`
-- se A ha rating molto più alto di B, il punteggio atteso di A è vicino a `1.0`
-- se A è sfavorito, il suo punteggio atteso è più vicino a `0.0`
-
-**Che cos'è il K factor**
-- il `k_factor` controlla quanto il rating è sensibile ai risultati
-- più è alto, più il rating cambia rapidamente
-- più è basso, più il rating è stabile
-
-**Che cos'è il logistic divisor**
-- `logistic_divisor` controlla quanto la differenza rating polarizza il punteggio atteso
-- più è basso, più le probabilità si allontanano rapidamente dal `50% / 50%`
-- più è alto, più il sistema resta conservativo
-
-**Che cos'è l'impact**
-- `normal_match_impact` pesa i match normali
-- `retirement_match_impact` riduce l'effetto dei match vinti/perduti per ritiro
-- `forfeit_match_impact` riduce ancora di più l'effetto dei forfait
-"""
-    )
-
-    with st.expander("Spiegazione intuitiva del metodo Elo"):
+    with st.expander("Interpretazione intuitiva dei parametri"):
         st.markdown(
             """
-Il metodo Elo nasce negli scacchi.
+- **Punteggio atteso `E`**  
+  è la stima teorica del risultato contro l'avversario in base ai rating pre-match
 
-L'idea è semplice:
+- **Punteggio effettivo `S`**  
+  nel sistema attuale non è solo vittoria o sconfitta:
+  - se il match ha `points_a` e `points_b`, allora  
+    `S_A = points_a / (points_a + points_b)` e `S_B = points_b / (points_a + points_b)`
+  - se entrambi i punti sono zero, si usa il vincitore come fallback:
+    - vittoria A → `1.0 / 0.0`
+    - vittoria B → `0.0 / 1.0`
+    - nessun vincitore definito → `0.5 / 0.5`
 
-1. ogni atleta ha un rating attuale
-2. da quei rating si stima il risultato atteso contro un avversario
-3. dopo il match si confronta il risultato reale con quello atteso
-4. il rating viene corretto in base alla differenza
+- **K factor**  
+  controlla quanto il rating cambia rapidamente:
+  - più alto = rating più sensibile
+  - più basso = rating più stabile
 
-Quindi:
-- se fai meglio del previsto, sali
-- se fai peggio del previsto, scendi
-- se il risultato era già atteso, il rating cambia poco
+- **Logistic divisor**  
+  controlla quanto la differenza rating polarizza il pronostico:
+  - più basso = le probabilità si allontanano prima dal 50/50
+  - più alto = il sistema resta più conservativo
+
+- **Impact del match**  
+  riduce o amplifica l'effetto dell'incontro:
+  - match normale → impatto pieno
+  - ritiro → impatto ridotto
+  - forfait → impatto ancora più ridotto
 """
         )
 
@@ -653,9 +715,24 @@ Quindi:
             ratings_inputs = render_group_inputs(rating_config, rating_order, "rating")
 
             if "level_start_ratings" in rating_config:
-                st.caption(
-                    f"Valori iniziali per livello (sola lettura): {rating_config['level_start_ratings']}"
-                )
+                level_start_ratings = rating_config["level_start_ratings"]
+                if isinstance(level_start_ratings, dict) and level_start_ratings:
+                    level_start_df = pd.DataFrame(
+                        [
+                            {"Level": int(level), "Rating iniziale": float(value)}
+                            for level, value in sorted(level_start_ratings.items())
+                        ]
+                    )
+                    st.caption("Rating iniziali per livello")
+                    st.dataframe(
+                        level_start_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.caption(
+                        f"Valori iniziali per livello (sola lettura): {level_start_ratings}"
+                    )
 
             col1, col2, col3 = st.columns(3)
             save_clicked = col1.form_submit_button("Salva parametri rating")
@@ -692,16 +769,280 @@ Quindi:
         st.rerun()
 
     st.divider()
+    st.subheader("Anteprima aggiornamento rating")
 
-    render_rankings_panel(
-        state_prefix="rating_rankings_preview",
-        title="Anteprima classifica",
-        show_filters_expanded=False,
-        recompute_before_render=False,
+    session = get_session()
+    try:
+        athletes: list[Athlete] = list(
+            session.scalars(select(Athlete).where(Athlete.active == True)).all()
+        )
+    finally:
+        session.close()
+
+    if len(athletes) < 2:
+        st.info("Servono almeno due atleti attivi per mostrare l'anteprima.")
+        render_flash_message("ratings")
+        return
+
+    athlete_options = {
+        a.id: format_athlete_preview_label(a, date.today())
+        for a in athletes
+    }
+    athlete_ids = list(athlete_options.keys())
+    default_b_index = 1 if len(athlete_ids) > 1 else 0
+
+    col1, col2 = st.columns(2)
+    with col1:
+        athlete_a_id = st.selectbox(
+            "Atleta A",
+            options=athlete_ids,
+            format_func=lambda athlete_id: athlete_options[athlete_id],
+            key="rating_preview_athlete_a",
+        )
+    with col2:
+        athlete_b_id = st.selectbox(
+            "Atleta B",
+            options=athlete_ids,
+            format_func=lambda athlete_id: athlete_options[athlete_id],
+            key="rating_preview_athlete_b",
+            index=default_b_index,
+        )
+
+    if athlete_a_id == athlete_b_id:
+        st.warning("Seleziona due atleti diversi per l'anteprima.")
+        render_flash_message("ratings")
+        return
+
+    athlete_by_id = {a.id: a for a in athletes}
+    athlete_a = athlete_by_id[athlete_a_id]
+    athlete_b = athlete_by_id[athlete_b_id]
+
+    rating_a = float(
+        athlete_a.rating
+        if athlete_a.rating is not None
+        else get_start_rating(int(athlete_a.level))
+    )
+    rating_b = float(
+        athlete_b.rating
+        if athlete_b.rating is not None
+        else get_start_rating(int(athlete_b.level))
     )
 
-    render_flash_message("ratings")
+    preview_k_factor = get_widget_value(
+        "rating",
+        "k_factor",
+        current_k_factor,
+        float,
+    )
+    preview_logistic_divisor = get_widget_value(
+        "rating",
+        "logistic_divisor",
+        current_logistic_divisor,
+        float,
+    )
+    preview_normal_match_impact = get_widget_value(
+        "rating",
+        "normal_match_impact",
+        current_normal_match_impact,
+        float,
+    )
+    preview_retirement_match_impact = get_widget_value(
+        "rating",
+        "retirement_match_impact",
+        current_retirement_match_impact,
+        float,
+    )
+    preview_forfeit_match_impact = get_widget_value(
+        "rating",
+        "forfeit_match_impact",
+        current_forfeit_match_impact,
+        float,
+    )
 
+    st.caption(
+        """
+Questa anteprima usa i rating correnti dei due atleti.
+Se inserisci punti > 0, il punteggio effettivo `S` viene calcolato dalla quota punti.
+Se entrambi i punti sono zero, viene usato il vincitore di fallback; se non è definito, il sistema usa `0.5 / 0.5`.
+"""
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        win_type = st.selectbox(
+            "Tipo match",
+            options=["Punti", "Schienamento", "Ritiro", "Forfait"],
+            key="rating_preview_win_type",
+        )
+
+    winner_options: list[str | None] = [None, "A", "B"]
+
+    with col2:
+        winner_side = st.selectbox(
+            "Vincitore di fallback (se i punti sono zero)",
+            options=winner_options,
+            format_func=format_winner_fallback_label,
+            key="rating_preview_winner_side",
+        )
+
+    col3, col4 = st.columns(2)
+    with col3:
+        points_a = st.number_input(
+            "Punti usati dal rating atleta A",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+            key="rating_preview_points_a",
+        )
+    with col4:
+        points_b = st.number_input(
+            "Punti usati dal rating atleta B",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+            key="rating_preview_points_b",
+        )
+
+    preview = preview_rating_update(
+        rating_a=rating_a,
+        rating_b=rating_b,
+        points_a=float(points_a),
+        points_b=float(points_b),
+        winner_side=winner_side,
+        win_type=win_type,
+        k_factor=float(preview_k_factor),
+        logistic_divisor=float(preview_logistic_divisor),
+        normal_match_impact=float(preview_normal_match_impact),
+        retirement_match_impact=float(preview_retirement_match_impact),
+        forfeit_match_impact=float(preview_forfeit_match_impact),
+    )
+
+    athlete_a_name = f"{athlete_a.first_name} {athlete_a.last_name or ''}".strip()
+    athlete_b_name = f"{athlete_b.first_name} {athlete_b.last_name or ''}".strip()
+
+    athlete_info_df = pd.DataFrame(
+        [
+            {
+                "Atleta": athlete_a_name,
+                "Stile": athlete_a.style,
+                "Sesso": athlete_a.sex,
+                "Età": calculate_age(athlete_a.birth_date, date.today()),
+                "Level": int(athlete_a.level),
+                "Team": athlete_a.team or "",
+                "Rating usato": round(rating_a, 2),
+                "Rating iniziale livello": round(get_start_rating(int(athlete_a.level)), 2),
+            },
+            {
+                "Atleta": athlete_b_name,
+                "Stile": athlete_b.style,
+                "Sesso": athlete_b.sex,
+                "Età": calculate_age(athlete_b.birth_date, date.today()),
+                "Level": int(athlete_b.level),
+                "Team": athlete_b.team or "",
+                "Rating usato": round(rating_b, 2),
+                "Rating iniziale livello": round(get_start_rating(int(athlete_b.level)), 2),
+            },
+        ]
+    )
+
+    st.write("**Atleti selezionati**")
+    st.table(athlete_info_df)
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    with metric_col1:
+        st.metric(
+            f"Prob. attesa {athlete_a_name}",
+            f"{preview['expected_a'] * 100:.1f}%",
+        )
+    with metric_col2:
+        st.metric(
+            f"Prob. attesa {athlete_b_name}",
+            f"{preview['expected_b'] * 100:.1f}%",
+        )
+    with metric_col3:
+        st.metric(
+            f"Δ rating {athlete_a_name}",
+            f"{preview['delta_a']:+.2f}",
+        )
+    with metric_col4:
+        st.metric(
+            f"Δ rating {athlete_b_name}",
+            f"{preview['delta_b']:+.2f}",
+        )
+
+    summary_df = pd.DataFrame(
+        [
+            {
+                "Voce": "Rating iniziale",
+                athlete_a_name: round(float(preview["rating_a"]), 2),
+                athlete_b_name: round(float(preview["rating_b"]), 2),
+            },
+            {
+                "Voce": "Punteggio atteso E",
+                athlete_a_name: round(float(preview["expected_a"]), 4),
+                athlete_b_name: round(float(preview["expected_b"]), 4),
+            },
+            {
+                "Voce": "Punteggio effettivo S",
+                athlete_a_name: round(float(preview["actual_a"]), 4),
+                athlete_b_name: round(float(preview["actual_b"]), 4),
+            },
+            {
+                "Voce": "Delta rating",
+                athlete_a_name: round(float(preview["delta_a"]), 2),
+                athlete_b_name: round(float(preview["delta_b"]), 2),
+            },
+            {
+                "Voce": "Rating finale",
+                athlete_a_name: round(float(preview["new_rating_a"]), 2),
+                athlete_b_name: round(float(preview["new_rating_b"]), 2),
+            },
+        ]
+    )
+
+    parameter_df = pd.DataFrame(
+        [
+            {
+                "Parametro": "K factor",
+                "Valore": round(float(preview["k_factor"]), 4),
+                "Significato": "Sensibilità base del rating",
+            },
+            {
+                "Parametro": "Impact",
+                "Valore": round(float(preview["impact"]), 4),
+                "Significato": "Peso del tipo di match",
+            },
+            {
+                "Parametro": "K effettivo",
+                "Valore": round(float(preview["effective_k"]), 4),
+                "Significato": "Prodotto K × impact",
+            },
+            {
+                "Parametro": "Logistic divisor",
+                "Valore": round(float(preview["logistic_divisor"]), 4),
+                "Significato": "Apre o chiude la forbice delle probabilità attese",
+            },
+            {
+                "Parametro": "Punti input A / B",
+                "Valore": f"{float(preview['points_a']):.2f} / {float(preview['points_b']):.2f}",
+                "Significato": "Usati per ricavare S quando il totale è > 0",
+            },
+            {
+                "Parametro": "Vincitore fallback",
+                "Valore": format_winner_fallback_label(winner_side),
+                "Significato": "Usato solo se entrambi i punti sono zero",
+            },
+        ]
+    )
+
+    st.write("**Scomposizione aggiornamento rating**")
+    st.table(summary_df)
+
+    st.write("**Parametri applicati nella simulazione**")
+    st.table(parameter_df)
+
+    render_flash_message("ratings")
+        
 
 def render_matchmaking_tab() -> None:
     config = get_full_config()
@@ -710,14 +1051,21 @@ def render_matchmaking_tab() -> None:
 
     apply_pending_reset("matchmaking", "matchmaking")
 
-    logistic_divisor = get_typed_value(
-        ratings_config,
-        "logistic_divisor",
-        400.0,
-        float,
+    st.subheader("Formula matchmaking (indice di disomogeneità)")
+
+    st.info(
+        """
+Il matchmaking usa il **mismatch** per valutare quanto una coppia sia adatta ed equilibrata.
+
+In pratica:
+- genera le coppie candidate compatibili con i vincoli scelti
+- calcola il mismatch per ogni coppia
+- privilegia le coppie con mismatch più basso
+
+Quindi il mismatch è il vero criterio con cui il sistema confronta la qualità degli accoppiamenti.
+"""
     )
 
-    st.subheader("Formula matchmaking (indice di disomogeneità)")
     st.markdown(
         r"""
 L'indice di disomogeneità tra due atleti A e B è calcolato così:
@@ -737,43 +1085,24 @@ $$
 """
     )
 
-    st.markdown(
-        """
-**Come viene usato**
-- il sistema costruisce le coppie candidate
-- calcola il mismatch per ogni coppia
-- ordina le coppie dalla migliore alla peggiore
-- privilegia quelle con indice più basso
-"""
-    )
-
-    st.caption(
-        "La probabilità attesa di vittoria mostrata nell'anteprima deriva dal rating Elo, non dal mismatch."
-    )
-
-    with st.expander("Come viene calcolata la probabilità attesa"):
+    with st.expander("Cosa cambia tra mismatch e rating"):
         st.markdown(
-            fr"""
-La probabilità attesa usa il **rating Elo** e corrisponde al punteggio atteso:
-
-$$
-E_A = \frac{{1}}{{1 + 10^{{(R_B - R_A)/D}}}}
-$$
-
-dove:
-
-- $R_A$ è il rating dell'atleta A
-- $R_B$ è il rating dell'atleta B
-- $E_A$ è il punteggio atteso di A contro B
-- D è il divisore logistico corrente `logistic_divisor = {logistic_divisor:g}`
-
-Nel sistema viene mostrato come **probabilità attesa di vittoria**:
-- rating uguali → circa **50% / 50%**
-- rating più alto → probabilità attesa più alta
+            """
+- la **probabilità Elo / rating** dice chi è favorito in base alla forza competitiva stimata
+- il **mismatch** dice quanto l'accoppiamento è appropriato nel complesso
 
 Quindi:
-- **mismatch** = quanto l'accoppiamento è equilibrato e adatto
-- **probabilità attesa Elo** = chi è favorito in base ai rating correnti
+- il rating è un **indicatore di pronostico**
+- il mismatch è un **criterio di qualità dell'accoppiamento**
+
+Il rating da solo non basta per costruire match equilibrati, perché non considera direttamente:
+- differenza di peso
+- differenza di level
+- differenza di età
+- rematch già avvenuti
+- vincoli logici del sistema
+
+Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare comunque un cattivo accoppiamento.
 """
         )
 
@@ -859,7 +1188,7 @@ Quindi:
         return
 
     athlete_options = {
-        a.id: f"{a.first_name} {a.last_name or ''}".strip() + f" (id={a.id})"
+        a.id: format_athlete_preview_label(a, date.today())
         for a in athletes
     }
     athlete_ids = list(athlete_options.keys())
@@ -981,6 +1310,11 @@ Quindi:
     st.write("**Atleti selezionati**")
     st.table(athlete_info_df)
 
+    st.caption(
+        "La probabilità Elo sotto indica chi è favorito. "
+        "L'indice mismatch invece misura quanto la coppia è adatta nel complesso."
+    )
+
     render_win_probability_metrics(
         athlete_a_name=athlete_a_name,
         athlete_b_name=athlete_b_name,
@@ -1044,6 +1378,18 @@ def render_scoring_tab() -> None:
     apply_pending_reset("scoring", "scoring")
 
     st.subheader("Formula punteggio")
+
+    st.info(
+        """
+Lo scoring calcola i **punti classifica** assegnati ai due atleti dopo ogni match.
+
+Questi punti:
+- alimentano direttamente la classifica atleti
+- influenzano indirettamente anche la classifica team
+- sono separati dal rating, che invece serve a stimare forza competitiva e matchmaking
+"""
+    )
+
     st.markdown(
         r"""
 Il punteggio assegnato a ciascun atleta in un match è:
@@ -1057,8 +1403,9 @@ $$
 """
     )
 
-    st.markdown(
-        r"""
+    with st.expander("Interpretazione intuitiva dei parametri"):
+        st.markdown(
+            r"""
 ### Base points
 I `base_points` dipendono dal risultato:
 - vittoria normale → `winner_base_points`
@@ -1067,6 +1414,8 @@ I `base_points` dipendono dal risultato:
 - forfait → `forfeit_winner_base_points` / `forfeit_loser_base_points`
 
 ### Performance bonus
+Misura quanto l'atleta ha prodotto tecnicamente rispetto all'avversario:
+
 $$
 performance\_bonus =
 \frac{raw\_score}{raw\_score + opponent\_raw\_score}
@@ -1074,25 +1423,31 @@ performance\_bonus =
 $$
 
 ### Finish bonus
+Dipende dal tipo di vittoria:
 - `Punti` → `points_finish_bonus`
 - `Schienamento` → `pinfall_finish_bonus`
 - `Ritiro` → `retirement_finish_bonus`
 - `Forfait` → `forfeit_finish_bonus`
 
-### Special factor
-- `special_bonus_factor` se l'atleta è femmina oppure minorenne e affronta un maschio adulto
-- `1.0` in tutti gli altri casi
-"""
-    )
+### Weight factor
+Il `weight_factor` dipende dalla differenza di peso rispetto all'avversario:
 
-    st.markdown(
-        """
-**Come viene usato**
-- i punti calcolati da questa formula vanno nella classifica
-- quindi questo blocco è quello che incide direttamente sulla posizione finale
-- la partecipazione è già valorizzata in modo indiretto, perché più incontri significano più occasioni di accumulare punti
+$$
+weight\_factor = 1 + ((peso\_avversario - peso\_proprio) \times weight\_bonus\_per\_kg)
+$$
+
+Interpretazione:
+- se affronti un atleta più pesante, il tuo fattore aumenta
+- se affronti un atleta più leggero, il tuo fattore diminuisce
+- il valore finale viene limitato tra `0.5` e `1.5`
+
+Se la differenza di peso supera `max_weight_diff_kg`, il match non è valido per il calcolo.
+
+### Special factor
+Applica `special_bonus_factor` se l'atleta è femmina oppure minorenne e affronta un maschio adulto.
+Negli altri casi vale `1.0`.
 """
-    )
+        )
 
     scoring_order = [
         "max_weight_diff_kg",
@@ -1175,7 +1530,7 @@ $$
         return
 
     athlete_options = {
-        a.id: f"{a.first_name} {a.last_name or ''}".strip() + f" (id={a.id})"
+        a.id: format_athlete_preview_label(a, date.today())
         for a in athletes
     }
     athlete_ids = list(athlete_options.keys())
@@ -1209,8 +1564,8 @@ $$
     athlete_b = athlete_by_id[athlete_b_id]
 
     st.caption(
-        "Questa anteprima usa i dati anagrafici degli atleti selezionati e ti permette "
-        "di simulare il punteggio risultante in base a esito, punteggio tecnico, peso e data evento."
+        "La data evento serve anche per calcolare l'età degli atleti: "
+        "le età mostrate nelle combobox e nell'anteprima sono riferite a questa data."
     )
 
     col1, col2, col3 = st.columns(3)
@@ -1366,11 +1721,18 @@ def render_level_evaluation_tab() -> None:
     apply_pending_reset("level_evaluation", "level_eval")
 
     st.subheader("Formula valutazione livello consigliato")
+
+    st.info(
+        """
+Questa formula non assegna automaticamente il livello dell'atleta.
+
+Serve come **supporto decisionale** per stimare un **livello consigliato**
+in base a esperienza, numero di incontri e risultati ottenuti.
+"""
+    )
+
     st.markdown(
         r"""
-Questa formula **non assegna automaticamente** il livello dell'atleta.
-Produce un **livello consigliato** come supporto all'inserimento.
-
 L'indice esperienza è:
 
 $$
@@ -1397,19 +1759,33 @@ $$
 """
     )
 
-    st.markdown(
-        """
-I `medals_points` dipendono da:
-- tipo di medaglia (`gold_weight`, `silver_weight`, `bronze_weight`)
-- tipo di competizione (`regional_weight`, `coppa_italia_weight`, ecc.)
+    with st.expander("Interpretazione intuitiva dei parametri"):
+        st.markdown(
+            """
+### Esperienza pratica
+- `years_component` misura l'anzianità di pratica
+- cresce con gli anni, ma si ferma al limite `years_cap`
 
-Le soglie finali producono il livello consigliato:
+### Esperienza agonistica
+- `matches_component` misura quanta esperienza reale di gara ha accumulato l'atleta
+- cresce con il numero di incontri, ma si ferma al limite `matches_cap`
+
+### Risultati sportivi
+- `medals_component` misura il valore dei risultati ottenuti
+- i `medals_points` dipendono sia dal tipo di medaglia sia dal livello della competizione
+- anche questa componente è limitata da `medals_cap`
+
+### Pesi delle componenti
+- `years_weight`, `matches_weight` e `medals_weight` decidono quanto incide ciascuna area nel risultato finale
+
+### Soglie finali
+L'indice esperienza viene trasformato in livello consigliato tramite le soglie:
 - sotto `threshold_level_2` → livello 1
 - sotto `threshold_level_3` → livello 2
 - sotto `threshold_level_4` → livello 3
 - sopra → livello 4
 """
-    )
+        )
 
     level_order = [
         "years_weight",
@@ -1472,16 +1848,22 @@ Le soglie finali producono il livello consigliato:
 
 def render_classification_tab() -> None:
     st.subheader("Formula classifica")
-    st.markdown(
-        """
-In questa sezione puoi configurare separatamente il metodo di ordinamento
-della classifica atleti e della classifica team.
 
-Lo scoring dei singoli incontri resta separato: qui scegli solo come
-aggregare e ordinare i punti già calcolati.
+    st.info(
+        """
+La classifica si basa sui **punti classifica** accumulati dagli atleti nelle gare,
+cioè sui punteggi prodotti dalla formula di scoring dopo ogni match.
+
+In questa sezione puoi decidere come ordinare e aggregare questi punti:
+- nella classifica atleti
+- nella classifica team
 """
     )
 
-    render_athlete_ranking_section()
-    st.divider()
-    render_team_ranking_section()
+    tab_athletes, tab_team = st.tabs(["Classifica atleti", "Classifica team"])
+
+    with tab_athletes:
+        render_athlete_ranking_section()
+
+    with tab_team:
+        render_team_ranking_section()

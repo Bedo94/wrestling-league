@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from datetime import date
+from typing import Literal, TypedDict
 
 from sqlalchemy import select
 
@@ -8,10 +9,35 @@ from src.models import Athlete, Event, Match
 from src.settings import RATINGS_SETTINGS
 
 
+class RatingPreviewResult(TypedDict):
+    rating_a: float
+    rating_b: float
+    expected_a: float
+    expected_b: float
+    actual_a: float
+    actual_b: float
+    points_a: float
+    points_b: float
+    winner_side: str | None
+    win_type: str | None
+    impact: float
+    k_factor: float
+    effective_k: float
+    logistic_divisor: float
+    delta_a: float
+    delta_b: float
+    new_rating_a: float
+    new_rating_b: float
+
+
 def get_start_rating(level: int) -> float:
     start_ratings = RATINGS_SETTINGS["level_start_ratings"]
     default_rating = float(RATINGS_SETTINGS["default_start_rating"])
     return float(start_ratings.get(level, default_rating))
+
+
+def get_k_factor() -> float:
+    return float(RATINGS_SETTINGS["k_factor"])
 
 
 def get_logistic_divisor() -> float:
@@ -27,27 +53,148 @@ def expected_score(
     return 1 / (1 + 10 ** ((rating_b - rating_a) / divisor))
 
 
-def get_actual_scores(match: Match) -> tuple[float, float]:
-    points_a = float(match.points_a or 0.0)
-    points_b = float(match.points_b or 0.0)
-    total = points_a + points_b
+def get_actual_scores_from_values(
+    *,
+    points_a: float | None,
+    points_b: float | None,
+    winner_side: str | None = None,
+) -> tuple[float, float]:
+    normalized_points_a = float(points_a or 0.0)
+    normalized_points_b = float(points_b or 0.0)
+    total = normalized_points_a + normalized_points_b
+
+    normalized_winner_side = winner_side if winner_side in {"A", "B"} else None
 
     if total > 0:
-        return points_a / total, points_b / total
+        return normalized_points_a / total, normalized_points_b / total
 
-    if match.winner_id == match.athlete_a_id:
+    if normalized_winner_side == "A":
         return 1.0, 0.0
-    if match.winner_id == match.athlete_b_id:
+    if normalized_winner_side == "B":
         return 0.0, 1.0
     return 0.5, 0.5
 
 
-def get_match_impact(win_type: str | None) -> float:
+def _get_winner_side_from_match(match: Match) -> str | None:
+    if match.winner_id == match.athlete_a_id:
+        return "A"
+    if match.winner_id == match.athlete_b_id:
+        return "B"
+    return None
+
+
+def get_actual_scores(match: Match) -> tuple[float, float]:
+    return get_actual_scores_from_values(
+        points_a=match.points_a,
+        points_b=match.points_b,
+        winner_side=_get_winner_side_from_match(match),
+    )
+
+
+def get_match_impact(
+    win_type: str | None,
+    *,
+    normal_match_impact: float | None = None,
+    retirement_match_impact: float | None = None,
+    forfeit_match_impact: float | None = None,
+) -> float:
+    resolved_normal_impact = (
+        float(RATINGS_SETTINGS["normal_match_impact"])
+        if normal_match_impact is None
+        else float(normal_match_impact)
+    )
+    resolved_retirement_impact = (
+        float(RATINGS_SETTINGS["retirement_match_impact"])
+        if retirement_match_impact is None
+        else float(retirement_match_impact)
+    )
+    resolved_forfeit_impact = (
+        float(RATINGS_SETTINGS["forfeit_match_impact"])
+        if forfeit_match_impact is None
+        else float(forfeit_match_impact)
+    )
+
     if win_type == "Ritiro":
-        return float(RATINGS_SETTINGS["retirement_match_impact"])
+        return resolved_retirement_impact
     if win_type == "Forfait":
-        return float(RATINGS_SETTINGS["forfeit_match_impact"])
-    return float(RATINGS_SETTINGS["normal_match_impact"])
+        return resolved_forfeit_impact
+    return resolved_normal_impact
+
+
+def preview_rating_update(
+    *,
+    rating_a: float,
+    rating_b: float,
+    points_a: float | None = None,
+    points_b: float | None = None,
+    winner_side: str | None = None,
+    win_type: str | None = None,
+    k_factor: float | None = None,
+    logistic_divisor: float | None = None,
+    normal_match_impact: float | None = None,
+    retirement_match_impact: float | None = None,
+    forfeit_match_impact: float | None = None,
+) -> RatingPreviewResult:
+    """
+    Simula l'aggiornamento rating tra due atleti senza leggere/scrivere il DB.
+
+    Regole:
+    - se points_a + points_b > 0, il punteggio effettivo S deriva dalla quota punti
+    - altrimenti si usa il winner_side come fallback (1/0 oppure 0.5/0.5 se assente)
+    - l'impact dipende dal win_type
+    """
+    effective_k_factor = get_k_factor() if k_factor is None else float(k_factor)
+    effective_logistic_divisor = (
+        get_logistic_divisor() if logistic_divisor is None else float(logistic_divisor)
+    )
+
+    expected_a = expected_score(
+        float(rating_a),
+        float(rating_b),
+        logistic_divisor=effective_logistic_divisor,
+    )
+    expected_b = 1.0 - expected_a
+
+    actual_a, actual_b = get_actual_scores_from_values(
+        points_a=points_a,
+        points_b=points_b,
+        winner_side=winner_side,
+    )
+
+    impact = get_match_impact(
+        win_type,
+        normal_match_impact=normal_match_impact,
+        retirement_match_impact=retirement_match_impact,
+        forfeit_match_impact=forfeit_match_impact,
+    )
+    effective_k = effective_k_factor * impact
+
+    delta_a = effective_k * (actual_a - expected_a)
+    delta_b = effective_k * (actual_b - expected_b)
+
+    new_rating_a = float(rating_a) + delta_a
+    new_rating_b = float(rating_b) + delta_b
+
+    return {
+        "rating_a": float(rating_a),
+        "rating_b": float(rating_b),
+        "expected_a": float(expected_a),
+        "expected_b": float(expected_b),
+        "actual_a": float(actual_a),
+        "actual_b": float(actual_b),
+        "points_a": float(points_a or 0.0),
+        "points_b": float(points_b or 0.0),
+        "winner_side": winner_side,
+        "win_type": win_type,
+        "impact": float(impact),
+        "k_factor": float(effective_k_factor),
+        "effective_k": float(effective_k),
+        "logistic_divisor": float(effective_logistic_divisor),
+        "delta_a": float(delta_a),
+        "delta_b": float(delta_b),
+        "new_rating_a": float(new_rating_a),
+        "new_rating_b": float(new_rating_b),
+    }
 
 
 def recompute_ratings() -> Mapping[int, float]:
@@ -56,7 +203,6 @@ def recompute_ratings() -> Mapping[int, float]:
         athletes = list(session.scalars(select(Athlete).order_by(Athlete.id)).all())
 
         default_rating = float(RATINGS_SETTINGS["default_start_rating"])
-        k_factor = float(RATINGS_SETTINGS["k_factor"])
 
         current_ratings: dict[int, float] = {
             athlete.id: get_start_rating(athlete.level)
@@ -75,25 +221,25 @@ def recompute_ratings() -> Mapping[int, float]:
             athlete_a_id = match.athlete_a_id
             athlete_b_id = match.athlete_b_id
 
-            rating_a: float = current_ratings[athlete_a_id]
-            rating_b: float = current_ratings[athlete_b_id]
+            rating_a = current_ratings[athlete_a_id]
+            rating_b = current_ratings[athlete_b_id]
 
-            expected_a = expected_score(rating_a, rating_b)
-            expected_b = 1.0 - expected_a
+            preview = preview_rating_update(
+                rating_a=rating_a,
+                rating_b=rating_b,
+                points_a=match.points_a,
+                points_b=match.points_b,
+                winner_side=_get_winner_side_from_match(match),
+                win_type=match.win_type,
+                k_factor=get_k_factor(),
+                logistic_divisor=get_logistic_divisor(),
+            )
 
-            actual_a, actual_b = get_actual_scores(match)
-            impact = get_match_impact(match.win_type)
-
-            k = k_factor * impact
-
-            new_rating_a = rating_a + k * (actual_a - expected_a)
-            new_rating_b = rating_b + k * (actual_b - expected_b)
-
-            current_ratings[athlete_a_id] = float(new_rating_a)
-            current_ratings[athlete_b_id] = float(new_rating_b)
+            current_ratings[athlete_a_id] = preview["new_rating_a"]
+            current_ratings[athlete_b_id] = preview["new_rating_b"]
 
         for athlete in athletes:
-            final_rating: float = current_ratings.get(athlete.id, default_rating)
+            final_rating = current_ratings.get(athlete.id, default_rating)
             athlete.rating = round(final_rating, 2)
 
         session.commit()
@@ -115,7 +261,6 @@ def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
             for athlete in athletes
         }
         default_rating = float(RATINGS_SETTINGS["default_start_rating"])
-        k_factor = float(RATINGS_SETTINGS["k_factor"])
 
         stmt = (
             select(Match, Event.event_date)
@@ -127,18 +272,25 @@ def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
         for match, event_date in rows:
             athlete_a_id = match.athlete_a_id
             athlete_b_id = match.athlete_b_id
-            rating_a: float = current_ratings[athlete_a_id]
-            rating_b: float = current_ratings[athlete_b_id]
-            expected_a = expected_score(rating_a, rating_b)
-            expected_b = 1.0 - expected_a
-            actual_a, actual_b = get_actual_scores(match)
-            impact = get_match_impact(match.win_type)
-            k = k_factor * impact
+            rating_a = current_ratings[athlete_a_id]
+            rating_b = current_ratings[athlete_b_id]
 
-            new_rating_a = rating_a + k * (actual_a - expected_a)
-            new_rating_b = rating_b + k * (actual_b - expected_b)
-            current_ratings[athlete_a_id] = float(new_rating_a)
-            current_ratings[athlete_b_id] = float(new_rating_b)
+            preview = preview_rating_update(
+                rating_a=rating_a,
+                rating_b=rating_b,
+                points_a=match.points_a,
+                points_b=match.points_b,
+                winner_side=_get_winner_side_from_match(match),
+                win_type=match.win_type,
+                k_factor=get_k_factor(),
+                logistic_divisor=get_logistic_divisor(),
+            )
+
+            new_rating_a = preview["new_rating_a"]
+            new_rating_b = preview["new_rating_b"]
+
+            current_ratings[athlete_a_id] = new_rating_a
+            current_ratings[athlete_b_id] = new_rating_b
 
             if event_date >= start_date:
                 match_rating_a = round(new_rating_a, 2)

@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from src.database import get_session
 from src.models import Athlete, Event, Match
 from src.reference_data import WIN_TYPE_OPTIONS
-from src.scoring import calculate_match_points
+from src.scoring import MatchPointsPreview, calculate_match_points
 from src.settings import TOKEN_SETTINGS
 from src.athletes import get_token_reset_scope
 
@@ -325,7 +325,7 @@ def _calculate_score_data(
     athlete_a_birth_date: date,
     athlete_b_birth_date: date,
     event_date: date,
-) -> dict:
+) -> MatchPointsPreview:
     _validate_match_inputs(
         athlete_a_id=athlete_a_id,
         athlete_b_id=athlete_b_id,
@@ -632,8 +632,8 @@ def recompute_all_match_scores() -> int:
                     f"({athlete_a_name} vs {athlete_b_name}): {exc}"
                 ) from exc
 
-            new_points_a = float(score_data["total_points_a"])
-            new_points_b = float(score_data["total_points_b"])
+            new_points_a = score_data["total_points_a"]
+            new_points_b = score_data["total_points_b"]
 
             if (
                 float(match.points_a or 0.0) != new_points_a

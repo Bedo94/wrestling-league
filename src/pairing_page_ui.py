@@ -297,14 +297,23 @@ def render_pairing_page() -> None:
         styles = sorted({athlete.style for athlete in all_athletes})
 
         with tab_profilo:
-            selected_style = st.selectbox("Stile", options=styles)
+            selected_styles = st.multiselect(
+                "Stili",
+                options=styles,
+                default=styles,
+                placeholder="Seleziona uno o più stili",
+            )
+
+            if not selected_styles:
+                st.warning("Seleziona almeno uno stile.")
+                st.stop()
 
             style_athletes = [
-                athlete for athlete in all_athletes if athlete.style == selected_style
+                athlete for athlete in all_athletes if athlete.style in selected_styles
             ]
 
             if len(style_athletes) < 2:
-                st.warning("Non ci sono abbastanza atleti attivi per questo stile.")
+                st.warning("Non ci sono abbastanza atleti attivi per gli stili selezionati.")
                 st.stop()
 
             sex_options = sorted({athlete.sex for athlete in style_athletes})

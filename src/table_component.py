@@ -368,6 +368,57 @@ def _merge_partial_df_into_full_df(
     return merged_df
 
 
+def _estimate_column_base_width(column_def: dict[str, Any]) -> int:
+    for key in ("width", "initialWidth", "minWidth"):
+        value = column_def.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    return 110
+
+
+def _apply_aggrid_responsive_column_sizing(
+    *,
+    grid_options: dict[str, Any],
+    visible_columns: list[str],
+    hidden_columns: list[str],
+) -> dict[str, Any]:
+    visible_columns_set = set(visible_columns)
+    hidden_columns_set = set(hidden_columns)
+
+    column_defs = grid_options.get("columnDefs", [])
+    for column_def in column_defs:
+        field_name = column_def.get("field")
+        if field_name is None:
+            continue
+
+        if field_name in hidden_columns_set or field_name not in visible_columns_set:
+            continue
+
+        if column_def.get("pinned"):
+            continue
+
+        base_width = _estimate_column_base_width(column_def)
+        existing_min_width = column_def.get("minWidth")
+        computed_min_width = max(int(base_width * 0.72), 70)
+
+        if not isinstance(existing_min_width, (int, float)):
+            column_def["minWidth"] = computed_min_width
+        else:
+            column_def["minWidth"] = max(int(existing_min_width), 70)
+
+        if "flex" not in column_def:
+            column_def["flex"] = max(1, round(base_width / 36))
+
+        column_def.pop("maxWidth", None)
+        column_def["suppressSizeToFit"] = False
+
+    default_col_def = grid_options.get("defaultColDef", {})
+    default_col_def["resizable"] = True
+    grid_options["defaultColDef"] = default_col_def
+
+    return grid_options
+
+
 def _apply_aggrid_column_visibility(
     *,
     grid_options: dict[str, Any],
@@ -388,6 +439,12 @@ def _apply_aggrid_column_visibility(
             continue
 
         column_def["hide"] = field_name not in visible_columns_set
+
+    grid_options = _apply_aggrid_responsive_column_sizing(
+        grid_options=grid_options,
+        visible_columns=visible_columns,
+        hidden_columns=hidden_columns,
+    )
 
     return grid_options
 
