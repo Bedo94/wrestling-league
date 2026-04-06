@@ -11,8 +11,8 @@ from src.database import (
     get_database_url,
     normalize_sqlite_path,
 )
-from src.init_db import init_db
 from src.formula_config_service import load_config
+from src.init_db import init_db
 
 DB_MODE_SQLITE = "sqlite"
 DB_MODE_POSTGRES = "postgresql"
@@ -27,28 +27,20 @@ DB_MODE_LABELS = {
     DB_MODE_POSTGRES: "PostgreSQL remoto",
 }
 
-# Ambienti logici
 DB_ENV_LEAGUE_LOCAL = "league_local"
 DB_ENV_LEAGUE_REMOTE = "league_remote"
-DB_ENV_TEST_LOCAL = "test_local"
-DB_ENV_TEST_REMOTE = "test_remote"
 
 DB_ENV_OPTIONS = (
     DB_ENV_LEAGUE_LOCAL,
     DB_ENV_LEAGUE_REMOTE,
-    DB_ENV_TEST_LOCAL,
-    DB_ENV_TEST_REMOTE,
 )
 
 DB_ENV_LABELS = {
-    DB_ENV_LEAGUE_LOCAL: "League local",
-    DB_ENV_LEAGUE_REMOTE: "League remote",
-    DB_ENV_TEST_LOCAL: "Test local",
-    DB_ENV_TEST_REMOTE: "Test remote",
+    DB_ENV_LEAGUE_LOCAL: "Locale",
+    DB_ENV_LEAGUE_REMOTE: "Remoto",
 }
 
 DB_CONTEXT_LEAGUE = "league"
-DB_CONTEXT_TEST = "test"
 
 DB_LOCATION_LOCAL = "local"
 DB_LOCATION_REMOTE = "remote"
@@ -65,27 +57,18 @@ STATE_DB_MODE = "db_mode"
 STATE_SQLITE_PATH = "db_sqlite_path"
 STATE_POSTGRES_URL = "db_postgres_url"
 STATE_ACTIVE_DB_INFO = "active_db_info"
-
 STATE_DB_ENVIRONMENT = "db_environment"
 
 STATE_LEAGUE_LOCAL_PATH = "db_league_local_path"
-STATE_TEST_LOCAL_PATH = "db_test_local_path"
 STATE_LEAGUE_REMOTE_URL = "db_league_remote_url"
-STATE_TEST_REMOTE_URL = "db_test_remote_url"
 
 UPLOADED_DB_DIR = DATA_DIR / "uploaded_dbs"
 UPLOADED_DB_DIR.mkdir(parents=True, exist_ok=True)
-
-DEFAULT_TEST_DB_PATH = DATA_DIR / "test_local.db"
 
 LEAGUE_REMOTE_URL_ENV_KEYS = (
     "LEAGUE_REMOTE_DATABASE_URL",
     "DATABASE_URL",
     "WL_DATABASE_URL",
-)
-TEST_REMOTE_URL_ENV_KEYS = (
-    "TEST_REMOTE_DATABASE_URL",
-    "WL_TEST_DATABASE_URL",
 )
 
 
@@ -132,25 +115,15 @@ def save_uploaded_sqlite_file(uploaded_file) -> Path:
     return destination
 
 
-def is_test_environment(environment_name: str) -> bool:
-    return environment_name in {DB_ENV_TEST_LOCAL, DB_ENV_TEST_REMOTE}
-
-
-def is_league_environment(environment_name: str) -> bool:
-    return environment_name in {DB_ENV_LEAGUE_LOCAL, DB_ENV_LEAGUE_REMOTE}
-
-
 def is_local_environment(environment_name: str) -> bool:
-    return environment_name in {DB_ENV_LEAGUE_LOCAL, DB_ENV_TEST_LOCAL}
+    return environment_name == DB_ENV_LEAGUE_LOCAL
 
 
 def is_remote_environment(environment_name: str) -> bool:
-    return environment_name in {DB_ENV_LEAGUE_REMOTE, DB_ENV_TEST_REMOTE}
+    return environment_name == DB_ENV_LEAGUE_REMOTE
 
 
 def get_environment_context(environment_name: str) -> str:
-    if is_test_environment(environment_name):
-        return DB_CONTEXT_TEST
     return DB_CONTEXT_LEAGUE
 
 
@@ -161,37 +134,30 @@ def get_environment_location(environment_name: str) -> str:
 
 
 def build_environment_name(context: str, location: str) -> str:
-    context = (context or "").strip().lower()
+    context = (context or DB_CONTEXT_LEAGUE).strip().lower()
     location = (location or "").strip().lower()
 
-    if context == DB_CONTEXT_LEAGUE and location == DB_LOCATION_LOCAL:
-        return DB_ENV_LEAGUE_LOCAL
-    if context == DB_CONTEXT_LEAGUE and location == DB_LOCATION_REMOTE:
-        return DB_ENV_LEAGUE_REMOTE
-    if context == DB_CONTEXT_TEST and location == DB_LOCATION_LOCAL:
-        return DB_ENV_TEST_LOCAL
-    if context == DB_CONTEXT_TEST and location == DB_LOCATION_REMOTE:
-        return DB_ENV_TEST_REMOTE
+    if context != DB_CONTEXT_LEAGUE:
+        raise ValueError(f"Contesto ambiente non supportato: {context}")
 
-    raise ValueError(f"Combinazione ambiente non valida: {context=} {location=}")
+    if location == DB_LOCATION_LOCAL:
+        return DB_ENV_LEAGUE_LOCAL
+
+    if location == DB_LOCATION_REMOTE:
+        return DB_ENV_LEAGUE_REMOTE
+
+    raise ValueError(f"Posizione ambiente non valida: {location}")
 
 
 def get_environment_description(environment_name: str) -> str:
     descriptions = {
         DB_ENV_LEAGUE_LOCAL: (
-            "Ambiente ufficiale locale. Utile come copia offline/backup operativo "
-            "del database ufficiale."
+            "Database SQLite locale. Utile per lavoro offline, backup operativo "
+            "e import da file."
         ),
         DB_ENV_LEAGUE_REMOTE: (
-            "Ambiente ufficiale remoto. È la fonte di verità dei dati reali."
-        ),
-        DB_ENV_TEST_LOCAL: (
-            "Ambiente di test locale. Serve per prove personali senza toccare "
-            "i dati ufficiali."
-        ),
-        DB_ENV_TEST_REMOTE: (
-            "Ambiente di test remoto. Serve per prove condivise senza toccare "
-            "i dati ufficiali."
+            "Database PostgreSQL remoto. Utile per lavoro condiviso e dati "
+            "centralizzati."
         ),
     }
     return descriptions.get(environment_name, "")
@@ -203,7 +169,6 @@ def can_sync_between_environments(source_environment: str, target_environment: s
 
     allowed_pairs = {
         frozenset({DB_ENV_LEAGUE_LOCAL, DB_ENV_LEAGUE_REMOTE}),
-        frozenset({DB_ENV_TEST_LOCAL, DB_ENV_TEST_REMOTE}),
     }
 
     return frozenset({source_environment, target_environment}) in allowed_pairs
@@ -215,16 +180,6 @@ def get_sync_policy_message(source_environment: str, target_environment: str) ->
 
     if can_sync_between_environments(source_environment, target_environment):
         return "Sincronizzazione consentita."
-
-    if (
-        is_test_environment(source_environment) and is_league_environment(target_environment)
-    ) or (
-        is_league_environment(source_environment) and is_test_environment(target_environment)
-    ):
-        return (
-            "Sincronizzazione NON consentita: gli ambienti di test non possono "
-            "essere sincronizzati con quelli ufficiali."
-        )
 
     return "Sincronizzazione NON consentita per questa combinazione di ambienti."
 
@@ -238,30 +193,24 @@ def list_sync_compatible_targets(source_environment: str) -> list[str]:
 
 
 def build_sync_route(context: str, direction: str) -> tuple[str, str]:
-    context = (context or "").strip().lower()
+    context = (context or DB_CONTEXT_LEAGUE).strip().lower()
     direction = (direction or "").strip().lower()
 
-    if context == DB_CONTEXT_LEAGUE:
-        if direction == DB_SYNC_DIRECTION_LOCAL_TO_REMOTE:
-            return DB_ENV_LEAGUE_LOCAL, DB_ENV_LEAGUE_REMOTE
-        if direction == DB_SYNC_DIRECTION_REMOTE_TO_LOCAL:
-            return DB_ENV_LEAGUE_REMOTE, DB_ENV_LEAGUE_LOCAL
+    if context != DB_CONTEXT_LEAGUE:
+        raise ValueError(f"Contesto sync non supportato: {context}")
 
-    if context == DB_CONTEXT_TEST:
-        if direction == DB_SYNC_DIRECTION_LOCAL_TO_REMOTE:
-            return DB_ENV_TEST_LOCAL, DB_ENV_TEST_REMOTE
-        if direction == DB_SYNC_DIRECTION_REMOTE_TO_LOCAL:
-            return DB_ENV_TEST_REMOTE, DB_ENV_TEST_LOCAL
+    if direction == DB_SYNC_DIRECTION_LOCAL_TO_REMOTE:
+        return DB_ENV_LEAGUE_LOCAL, DB_ENV_LEAGUE_REMOTE
 
-    raise ValueError(f"Combinazione sync non valida: {context=} {direction=}")
+    if direction == DB_SYNC_DIRECTION_REMOTE_TO_LOCAL:
+        return DB_ENV_LEAGUE_REMOTE, DB_ENV_LEAGUE_LOCAL
+
+    raise ValueError(f"Direzione sync non valida: {direction}")
 
 
 def get_sync_route_description(context: str, direction: str) -> str:
     source_environment, target_environment = build_sync_route(context, direction)
-    return (
-        f"{DB_ENV_LABELS[source_environment]} → "
-        f"{DB_ENV_LABELS[target_environment]}"
-    )
+    return f"{DB_ENV_LABELS[source_environment]} → {DB_ENV_LABELS[target_environment]}"
 
 
 def _infer_initial_state() -> tuple[str, str, str, str]:
@@ -269,34 +218,21 @@ def _infer_initial_state() -> tuple[str, str, str, str]:
 
     if current_sqlite_path is None:
         current_url = get_database_url(hide_password=False)
-        test_remote_url = sanitize_database_url(
-            _first_env_value(TEST_REMOTE_URL_ENV_KEYS)
-        )
-
-        if test_remote_url and current_url == test_remote_url:
-            environment_name = DB_ENV_TEST_REMOTE
-        else:
-            environment_name = DB_ENV_LEAGUE_REMOTE
 
         return (
             DB_MODE_POSTGRES,
             "",
             current_url,
-            environment_name,
+            DB_ENV_LEAGUE_REMOTE,
         )
 
     resolved_path = current_sqlite_path.resolve()
-
-    if resolved_path == DEFAULT_TEST_DB_PATH.resolve():
-        environment_name = DB_ENV_TEST_LOCAL
-    else:
-        environment_name = DB_ENV_LEAGUE_LOCAL
 
     return (
         DB_MODE_SQLITE,
         str(resolved_path),
         "",
-        environment_name,
+        DB_ENV_LEAGUE_LOCAL,
     )
 
 
@@ -305,12 +241,8 @@ def ensure_db_state() -> None:
         return
 
     st.session_state[STATE_LEAGUE_LOCAL_PATH] = str(DEFAULT_DB_PATH.resolve())
-    st.session_state[STATE_TEST_LOCAL_PATH] = str(DEFAULT_TEST_DB_PATH.resolve())
     st.session_state[STATE_LEAGUE_REMOTE_URL] = sanitize_database_url(
         _first_env_value(LEAGUE_REMOTE_URL_ENV_KEYS)
-    )
-    st.session_state[STATE_TEST_REMOTE_URL] = sanitize_database_url(
-        _first_env_value(TEST_REMOTE_URL_ENV_KEYS)
     )
 
     mode, sqlite_path, postgres_url, environment_name = _infer_initial_state()
@@ -355,23 +287,9 @@ def _infer_environment_from_selection(
     postgres_url: str,
 ) -> str:
     if mode == DB_MODE_SQLITE:
-        clean_path = sanitize_sqlite_path(sqlite_path)
-        resolved_path = normalize_sqlite_path(clean_path or DEFAULT_DB_PATH)
-
-        if resolved_path.resolve() == DEFAULT_TEST_DB_PATH.resolve():
-            return DB_ENV_TEST_LOCAL
-
         return DB_ENV_LEAGUE_LOCAL
 
     if mode == DB_MODE_POSTGRES:
-        clean_url = sanitize_database_url(postgres_url)
-        test_remote_url = sanitize_database_url(
-            st.session_state.get(STATE_TEST_REMOTE_URL, "")
-        )
-
-        if clean_url and test_remote_url and clean_url == test_remote_url:
-            return DB_ENV_TEST_REMOTE
-
         return DB_ENV_LEAGUE_REMOTE
 
     raise ValueError(f"Modalità database non supportata: {mode}")
@@ -385,16 +303,10 @@ def _apply_database(
     environment_name: str,
 ) -> dict:
     if mode == DB_MODE_SQLITE:
-        if environment_name == DB_ENV_TEST_LOCAL:
-            fallback_path = st.session_state.get(
-                STATE_TEST_LOCAL_PATH,
-                str(DEFAULT_TEST_DB_PATH.resolve()),
-            )
-        else:
-            fallback_path = st.session_state.get(
-                STATE_LEAGUE_LOCAL_PATH,
-                str(DEFAULT_DB_PATH.resolve()),
-            )
+        fallback_path = st.session_state.get(
+            STATE_LEAGUE_LOCAL_PATH,
+            str(DEFAULT_DB_PATH.resolve()),
+        )
 
         clean_path = sanitize_sqlite_path(sqlite_path)
         resolved_path = normalize_sqlite_path(clean_path or fallback_path)
@@ -420,11 +332,7 @@ def _apply_database(
         }
 
     if mode == DB_MODE_POSTGRES:
-        if environment_name == DB_ENV_TEST_REMOTE:
-            fallback_url = st.session_state.get(STATE_TEST_REMOTE_URL, "")
-        else:
-            fallback_url = st.session_state.get(STATE_LEAGUE_REMOTE_URL, "")
-
+        fallback_url = st.session_state.get(STATE_LEAGUE_REMOTE_URL, "")
         clean_url = sanitize_database_url(postgres_url or fallback_url)
 
         if not clean_url:
@@ -475,22 +383,13 @@ def set_database_selection(
     st.session_state[STATE_DB_ENVIRONMENT] = resolved_environment_name
 
     if mode == DB_MODE_SQLITE:
-        if resolved_environment_name == DB_ENV_TEST_LOCAL:
-            stored_sqlite_path = clean_sqlite_path or str(DEFAULT_TEST_DB_PATH.resolve())
-            st.session_state[STATE_TEST_LOCAL_PATH] = stored_sqlite_path
-        else:
-            stored_sqlite_path = clean_sqlite_path or str(DEFAULT_DB_PATH.resolve())
-            st.session_state[STATE_LEAGUE_LOCAL_PATH] = stored_sqlite_path
-
+        stored_sqlite_path = clean_sqlite_path or str(DEFAULT_DB_PATH.resolve())
+        st.session_state[STATE_LEAGUE_LOCAL_PATH] = stored_sqlite_path
         st.session_state[STATE_SQLITE_PATH] = stored_sqlite_path
         st.session_state[STATE_POSTGRES_URL] = ""
 
     elif mode == DB_MODE_POSTGRES:
-        if resolved_environment_name == DB_ENV_TEST_REMOTE:
-            st.session_state[STATE_TEST_REMOTE_URL] = clean_postgres_url
-        else:
-            st.session_state[STATE_LEAGUE_REMOTE_URL] = clean_postgres_url
-
+        st.session_state[STATE_LEAGUE_REMOTE_URL] = clean_postgres_url
         st.session_state[STATE_SQLITE_PATH] = ""
         st.session_state[STATE_POSTGRES_URL] = clean_postgres_url
 
