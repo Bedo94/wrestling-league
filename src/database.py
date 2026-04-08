@@ -15,6 +15,10 @@ DEFAULT_DB_PATH = DATA_DIR / "league.db"
 DATABASE_URL_ENV_KEYS = ("DATABASE_URL", "WL_DATABASE_URL")
 SQLITE_PATH_ENV_KEY = "WL_SQLITE_PATH"
 
+POSTGRES_CONNECT_TIMEOUT_SECONDS = int(
+    os.getenv("WL_POSTGRES_CONNECT_TIMEOUT_SECONDS", "5")
+)
+
 
 class Base(DeclarativeBase):
     pass
@@ -44,11 +48,29 @@ def build_sqlite_url(sqlite_path: str | Path | None = None) -> str:
     return f"sqlite:///{path.as_posix()}"
 
 
+def normalize_postgres_database_url(raw_url: str | None) -> str:
+    value = (raw_url or "").strip()
+
+    if not value:
+        return ""
+
+    if value.startswith("postgresql+psycopg://"):
+        return value
+
+    if value.startswith("postgresql://"):
+        return "postgresql+psycopg://" + value[len("postgresql://") :]
+
+    if value.startswith("postgres://"):
+        return "postgresql+psycopg://" + value[len("postgres://") :]
+
+    return value
+
+
 def resolve_database_url() -> str:
     for env_key in DATABASE_URL_ENV_KEYS:
         value = os.getenv(env_key)
         if value:
-            return value
+            return normalize_postgres_database_url(value)
 
     sqlite_path = os.getenv(SQLITE_PATH_ENV_KEY)
     return build_sqlite_url(sqlite_path)
@@ -61,6 +83,12 @@ def is_sqlite_url(database_url: str) -> bool:
     return database_url.startswith("sqlite")
 
 
+def build_postgres_connect_args() -> dict[str, Any]:
+    return {
+        "connect_timeout": POSTGRES_CONNECT_TIMEOUT_SECONDS,
+    }
+
+
 def _engine_kwargs(database_url: str) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "echo": False,
@@ -69,6 +97,9 @@ def _engine_kwargs(database_url: str) -> dict[str, Any]:
 
     if is_sqlite_url(database_url):
         kwargs["connect_args"] = {"check_same_thread": False}
+    else:
+        kwargs["pool_pre_ping"] = True
+        kwargs["connect_args"] = build_postgres_connect_args()
 
     return kwargs
 
@@ -81,7 +112,7 @@ def configure_database(
     global engine, DATABASE_URL
 
     if database_url:
-        resolved_url = database_url.strip()
+        resolved_url = normalize_postgres_database_url(database_url)
     elif sqlite_path is not None:
         resolved_url = build_sqlite_url(sqlite_path)
     else:

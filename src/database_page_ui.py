@@ -15,11 +15,16 @@ from src.db_runtime import (
     DB_SYNC_DIRECTION_LOCAL_TO_REMOTE,
     DB_SYNC_DIRECTION_REMOTE_TO_LOCAL,
     STATE_LEAGUE_LOCAL_PATH,
-    STATE_LEAGUE_REMOTE_URL,
     build_environment_name,
     build_uploaded_sqlite_destination,
     get_active_database_info,
+    get_configured_remote_databases,
     get_environment_location,
+    get_selected_remote_database_description,
+    get_selected_remote_database_key,
+    get_selected_remote_database_label,
+    get_selected_remote_database_url,
+    sanitize_remote_database_key,
     save_uploaded_sqlite_file,
     set_database_selection,
 )
@@ -58,6 +63,7 @@ LEAGUE_REMOTE_ENVIRONMENT = build_environment_name(
 LAST_SYNC_RESULT_KEY = "last_sync_result"
 CONFLICT_TABLE_ALL = "Tutte"
 CONFLICT_REASON_ALL = "Tutti"
+REMOTE_OPTION_MANUAL = "__manual__"
 
 
 def get_location_index(location: str) -> int:
@@ -74,17 +80,13 @@ def get_league_local_sqlite_path() -> str:
     )
 
 
-def get_league_remote_postgres_url() -> str:
-    return st.session_state.get(STATE_LEAGUE_REMOTE_URL, "")
-
-
 def get_active_database_locator(active_db: dict) -> str:
     active_location = get_environment_location(active_db["environment_name"])
 
     if active_location == DB_LOCATION_LOCAL:
         return active_db.get("sqlite_path") or get_league_local_sqlite_path()
 
-    return get_league_remote_postgres_url()
+    return active_db.get("postgres_url") or get_selected_remote_database_url()
 
 
 def build_connection_config(environment_name: str) -> dict[str, str]:
@@ -100,7 +102,7 @@ def build_connection_config(environment_name: str) -> dict[str, str]:
     return {
         "mode": DB_MODE_POSTGRES,
         "sqlite_path": "",
-        "postgres_url": get_league_remote_postgres_url(),
+        "postgres_url": get_selected_remote_database_url(),
     }
 
 
@@ -122,12 +124,48 @@ def build_conflicts_dataframe(conflicts: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(conflicts)
 
 
+def build_remote_toml_snippet(
+    *,
+    label: str,
+    description: str,
+    url: str,
+) -> str:
+    clean_label = (label or "").replace('"', '\\"').strip()
+    clean_description = (description or "").replace('"', '\\"').strip()
+    clean_url = (url or "").replace('"', '\\"').strip()
+
+    generated_key = sanitize_remote_database_key(clean_label)
+
+    if not generated_key or not clean_label or not clean_url:
+        return ""
+
+    return (
+        f'[remote_databases.{generated_key}]\n'
+        f'label = "{clean_label}"\n'
+        f'description = "{clean_description}"\n'
+        f'url = "{clean_url}"'
+    )
+
+
 def render_active_database_summary(active_db: dict) -> None:
     active_location = get_environment_location(active_db["environment_name"])
     active_location_label = LOCATION_LABELS.get(active_location, "Sconosciuto")
 
     st.write(f"**Posizione attiva:** {active_location_label}")
     st.write(f"**Backend attivo:** {active_db['mode_label']}")
+
+    if active_location == DB_LOCATION_REMOTE:
+        remote_label = active_db.get("remote_label") or get_selected_remote_database_label()
+        remote_description = (
+            active_db.get("remote_description")
+            or get_selected_remote_database_description()
+        )
+
+        if remote_label:
+            st.write(f"**Remoto attivo:** {remote_label}")
+        if remote_description:
+            st.caption(remote_description)
+
     st.write("**Percorso / URL attivo:**")
     st.code(get_active_database_locator(active_db))
 
@@ -138,6 +176,168 @@ def render_database_usage_tab(
 ) -> None:
     st.subheader("Database attualmente in uso")
     render_active_database_summary(active_db)
+
+
+def render_remote_database_selector(*, can_edit_database: bool) -> None:
+    configured_remotes = get_configured_remote_databases()
+    configured_keys = list(configured_remotes.keys())
+    selected_remote_key = get_selected_remote_database_key()
+
+    if configured_keys:
+        remote_options = configured_keys + [REMOTE_OPTION_MANUAL]
+        default_option = (
+            selected_remote_key
+            if selected_remote_key in configured_remotes
+            else REMOTE_OPTION_MANUAL
+        )
+        default_index = remote_options.index(default_option)
+
+        chosen_remote_option = st.selectbox(
+            "Database remoto configurato",
+            options=remote_options,
+            index=default_index,
+            format_func=lambda value: (
+                "Personalizzato"
+                if value == REMOTE_OPTION_MANUAL
+                else configured_remotes[value]["label"]
+            ),
+            disabled=not can_edit_database,
+        )
+    else:
+        chosen_remote_option = REMOTE_OPTION_MANUAL
+        st.info(
+            "Nessun remoto configurato in secrets.toml. "
+            "Puoi usare la modalità personalizzata."
+        )
+
+    if chosen_remote_option != REMOTE_OPTION_MANUAL:
+        selected_entry = configured_remotes[chosen_remote_option]
+
+        st.write(f"**Nome:** {selected_entry['label']}")
+        if selected_entry["description"]:
+            st.caption(selected_entry["description"])
+
+        st.write("**URL:**")
+        st.code(selected_entry["url"])
+        st.caption(
+            "Se il database remoto è vuoto, l'app proverà a inizializzare automaticamente lo schema."
+        )
+
+        if st.button(
+            "Attiva database remoto selezionato",
+            use_container_width=True,
+            disabled=not can_edit_database,
+            key="activate_configured_remote_db",
+        ):
+            try:
+                set_database_selection(
+                    mode=DB_MODE_POSTGRES,
+                    sqlite_path="",
+                    postgres_url="",
+                    environment_name=LEAGUE_REMOTE_ENVIRONMENT,
+                    remote_key=selected_entry["key"],
+                )
+                st.success("Database remoto attivato.")
+                st.rerun()
+
+            except Exception as exc:
+                st.error(f"Errore durante l'attivazione del database remoto: {exc}")
+
+        return
+
+    st.caption(
+        "Modalità personalizzata: attiva subito un remoto non presente nel catalogo. "
+        "Per renderlo permanente copia poi lo snippet in secrets.toml."
+    )
+
+    manual_default_label = get_selected_remote_database_label()
+    manual_default_description = get_selected_remote_database_description()
+    manual_default_url = get_selected_remote_database_url()
+
+    is_current_remote_custom = (
+        bool(get_selected_remote_database_url())
+        and get_selected_remote_database_key() not in configured_remotes
+    )
+
+    manual_label = st.text_input(
+        "Nome remoto",
+        value=manual_default_label if is_current_remote_custom else "",
+        disabled=not can_edit_database,
+        key="custom_remote_label",
+    )
+
+    manual_description = st.text_area(
+        "Descrizione",
+        value=manual_default_description if is_current_remote_custom else "",
+        disabled=not can_edit_database,
+        key="custom_remote_description",
+    )
+
+    manual_url = st.text_input(
+        "DATABASE_URL PostgreSQL",
+        value=manual_default_url if is_current_remote_custom else "",
+        type="password",
+        disabled=not can_edit_database,
+        help=(
+            "Puoi incollare direttamente anche la URL generata da Neon "
+            "(es. postgresql://...). L'app la adatta automaticamente al driver richiesto."
+        ),
+        key="custom_remote_url",
+    )
+
+    st.caption(
+        "Puoi incollare direttamente la URL PostgreSQL fornita da Neon o da altri provider. "
+        "Se necessario, l'app aggiunge automaticamente il driver compatibile."
+    )
+    st.caption(
+        "Se il database remoto è vuoto, l'app proverà a inizializzare automaticamente lo schema."
+    )
+
+    toml_snippet = build_remote_toml_snippet(
+        label=manual_label,
+        description=manual_description,
+        url=manual_url,
+    )
+
+    if toml_snippet:
+        st.write("**Snippet da copiare in `secrets.toml`**")
+        st.code(toml_snippet, language="toml")
+
+    if st.button(
+        "Attiva database remoto personalizzato",
+        use_container_width=True,
+        disabled=not can_edit_database,
+        key="activate_custom_remote_db",
+    ):
+        try:
+            generated_remote_key = sanitize_remote_database_key(manual_label)
+
+            if not generated_remote_key:
+                st.warning("Inserisci un nome remoto valido.")
+                return
+
+            if not manual_label.strip():
+                st.warning("Inserisci un nome leggibile per il remoto.")
+                return
+
+            if not manual_url.strip():
+                st.warning("Inserisci una DATABASE_URL valida.")
+                return
+
+            set_database_selection(
+                mode=DB_MODE_POSTGRES,
+                sqlite_path="",
+                postgres_url=manual_url,
+                environment_name=LEAGUE_REMOTE_ENVIRONMENT,
+                remote_key=generated_remote_key,
+                remote_label=manual_label,
+                remote_description=manual_description,
+            )
+            st.success("Database remoto personalizzato attivato.")
+            st.rerun()
+
+        except Exception as exc:
+            st.error(f"Errore durante l'attivazione del database remoto: {exc}")
 
 
 def render_import_export_tab(
@@ -158,10 +358,6 @@ def render_import_export_tab(
         horizontal=True,
         disabled=not can_edit_database,
     )
-
-    sqlite_path = ""
-    postgres_url = ""
-    uploaded_sqlite_file = None
 
     if selected_location == DB_LOCATION_LOCAL:
         st.caption(
@@ -216,34 +412,9 @@ def render_import_export_tab(
                 st.error(f"Errore durante l'attivazione del database locale: {exc}")
 
     else:
-        st.caption("Lavora sul database PostgreSQL remoto configurato per l'app.")
-
-        postgres_url = st.text_input(
-            "DATABASE_URL PostgreSQL",
-            value=get_league_remote_postgres_url(),
-            type="password",
-            disabled=not can_edit_database,
-            help="Esempio: postgresql+psycopg://user:password@host:5432/dbname",
+        render_remote_database_selector(
+            can_edit_database=can_edit_database,
         )
-
-        if st.button(
-            "Attiva database remoto",
-            use_container_width=True,
-            disabled=not can_edit_database,
-        ):
-            try:
-                set_database_selection(
-                    mode=DB_MODE_POSTGRES,
-                    sqlite_path="",
-                    postgres_url=postgres_url,
-                    environment_name=LEAGUE_REMOTE_ENVIRONMENT,
-                )
-
-                st.success("Database remoto attivato.")
-                st.rerun()
-
-            except Exception as exc:
-                st.error(f"Errore durante l'attivazione del database remoto: {exc}")
 
     st.divider()
     st.subheader("Esporta il database attivo")

@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import re
 
 import streamlit as st
 
@@ -61,6 +62,9 @@ STATE_DB_ENVIRONMENT = "db_environment"
 
 STATE_LEAGUE_LOCAL_PATH = "db_league_local_path"
 STATE_LEAGUE_REMOTE_URL = "db_league_remote_url"
+STATE_LEAGUE_REMOTE_KEY = "db_league_remote_key"
+STATE_LEAGUE_REMOTE_LABEL = "db_league_remote_label"
+STATE_LEAGUE_REMOTE_DESCRIPTION = "db_league_remote_description"
 
 UPLOADED_DB_DIR = DATA_DIR / "uploaded_dbs"
 UPLOADED_DB_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,6 +74,8 @@ LEAGUE_REMOTE_URL_ENV_KEYS = (
     "DATABASE_URL",
     "WL_DATABASE_URL",
 )
+
+REMOTE_DATABASES_SECRET_KEY = "remote_databases"
 
 
 def _first_env_value(keys: tuple[str, ...], default: str = "") -> str:
@@ -93,8 +99,33 @@ def sanitize_sqlite_path(raw_path: str | None) -> str:
     return _clean_wrapped_text(raw_path)
 
 
+def normalize_postgres_driver_url(raw_url: str | None) -> str:
+    url = _clean_wrapped_text(raw_url)
+
+    if not url:
+        return ""
+
+    if url.startswith("postgresql+psycopg://"):
+        return url
+
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
+
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://") :]
+
+    return url
+
+
 def sanitize_database_url(raw_url: str | None) -> str:
-    return _clean_wrapped_text(raw_url)
+    return normalize_postgres_driver_url(raw_url)
+
+
+def sanitize_remote_database_key(raw_key: str | None) -> str:
+    value = (raw_key or "").strip().lower()
+    value = re.sub(r"[^a-z0-9_]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value
 
 
 def build_uploaded_sqlite_destination(filename: str) -> Path:
@@ -210,29 +241,129 @@ def build_sync_route(context: str, direction: str) -> tuple[str, str]:
 
 def get_sync_route_description(context: str, direction: str) -> str:
     source_environment, target_environment = build_sync_route(context, direction)
-    return f"{DB_ENV_LABELS[source_environment]} → {DB_ENV_LABELS[target_environment]}"
+    return (
+        f"{DB_ENV_LABELS[source_environment]} → "
+        f"{DB_ENV_LABELS[target_environment]}"
+    )
 
 
-def _infer_initial_state() -> tuple[str, str, str, str]:
+def _get_secrets_root() -> dict:
+    try:
+        return dict(st.secrets)
+    except Exception:
+        return {}
+
+
+def get_configured_remote_databases() -> dict[str, dict[str, str]]:
+    secrets_root = _get_secrets_root()
+    raw_catalog = secrets_root.get(REMOTE_DATABASES_SECRET_KEY, {}) or {}
+
+    catalog: dict[str, dict[str, str]] = {}
+
+    try:
+        items = dict(raw_catalog).items()
+    except Exception:
+        items = []
+
+    for raw_key, raw_entry in items:
+        key = sanitize_remote_database_key(str(raw_key))
+        if not key:
+            continue
+
+        try:
+            entry = dict(raw_entry)
+        except Exception:
+            continue
+
+        url = sanitize_database_url(entry.get("url"))
+        if not url:
+            continue
+
+        label = str(entry.get("label") or key)
+        description = str(entry.get("description") or "")
+
+        catalog[key] = {
+            "key": key,
+            "label": label,
+            "description": description,
+            "url": url,
+        }
+
+    if catalog:
+        return catalog
+
+    fallback_url = sanitize_database_url(_first_env_value(LEAGUE_REMOTE_URL_ENV_KEYS))
+    if fallback_url:
+        catalog["default"] = {
+            "key": "default",
+            "label": "Remoto predefinito",
+            "description": "Remoto letto dalle variabili d'ambiente legacy.",
+            "url": fallback_url,
+        }
+
+    return catalog
+
+
+def get_remote_database_entry(remote_key: str | None) -> dict[str, str] | None:
+    key = sanitize_remote_database_key(remote_key)
+    if not key:
+        return None
+    return get_configured_remote_databases().get(key)
+
+
+def _find_remote_key_by_url(url: str) -> str:
+    clean_url = sanitize_database_url(url)
+    if not clean_url:
+        return ""
+
+    for key, entry in get_configured_remote_databases().items():
+        if sanitize_database_url(entry.get("url")) == clean_url:
+            return key
+
+    return ""
+
+
+def _get_default_remote_entry() -> dict[str, str] | None:
+    catalog = get_configured_remote_databases()
+    return next(iter(catalog.values()), None)
+
+
+def _infer_initial_state() -> tuple[str, str, str, str, str, str, str]:
     current_sqlite_path = get_current_sqlite_path()
 
     if current_sqlite_path is None:
-        current_url = get_database_url(hide_password=False)
+        current_url = sanitize_database_url(get_database_url(hide_password=False))
+        remote_key = _find_remote_key_by_url(current_url)
+        remote_entry = get_remote_database_entry(remote_key)
+
+        if remote_entry is not None:
+            remote_label = remote_entry["label"]
+            remote_description = remote_entry["description"]
+        else:
+            remote_label = "Remoto personalizzato"
+            remote_description = ""
 
         return (
             DB_MODE_POSTGRES,
             "",
             current_url,
             DB_ENV_LEAGUE_REMOTE,
+            remote_key,
+            remote_label,
+            remote_description,
         )
 
     resolved_path = current_sqlite_path.resolve()
+    default_remote_entry = _get_default_remote_entry()
 
     return (
         DB_MODE_SQLITE,
         str(resolved_path),
         "",
         DB_ENV_LEAGUE_LOCAL,
+        default_remote_entry["key"] if default_remote_entry else "",
+        default_remote_entry["label"] if default_remote_entry else "",
+        default_remote_entry["description"] if default_remote_entry else "",
     )
 
 
@@ -240,17 +371,44 @@ def ensure_db_state() -> None:
     if STATE_DB_MODE in st.session_state:
         return
 
+    default_remote_entry = _get_default_remote_entry()
+
     st.session_state[STATE_LEAGUE_LOCAL_PATH] = str(DEFAULT_DB_PATH.resolve())
-    st.session_state[STATE_LEAGUE_REMOTE_URL] = sanitize_database_url(
-        _first_env_value(LEAGUE_REMOTE_URL_ENV_KEYS)
+    st.session_state[STATE_LEAGUE_REMOTE_URL] = (
+        default_remote_entry["url"] if default_remote_entry else ""
+    )
+    st.session_state[STATE_LEAGUE_REMOTE_KEY] = (
+        default_remote_entry["key"] if default_remote_entry else ""
+    )
+    st.session_state[STATE_LEAGUE_REMOTE_LABEL] = (
+        default_remote_entry["label"] if default_remote_entry else ""
+    )
+    st.session_state[STATE_LEAGUE_REMOTE_DESCRIPTION] = (
+        default_remote_entry["description"] if default_remote_entry else ""
     )
 
-    mode, sqlite_path, postgres_url, environment_name = _infer_initial_state()
+    (
+        mode,
+        sqlite_path,
+        postgres_url,
+        environment_name,
+        remote_key,
+        remote_label,
+        remote_description,
+    ) = _infer_initial_state()
 
     st.session_state[STATE_DB_MODE] = mode
     st.session_state[STATE_SQLITE_PATH] = sqlite_path
     st.session_state[STATE_POSTGRES_URL] = postgres_url
     st.session_state[STATE_DB_ENVIRONMENT] = environment_name
+
+    if remote_key or postgres_url:
+        st.session_state[STATE_LEAGUE_REMOTE_KEY] = remote_key
+        st.session_state[STATE_LEAGUE_REMOTE_URL] = (
+            postgres_url or st.session_state.get(STATE_LEAGUE_REMOTE_URL, "")
+        )
+        st.session_state[STATE_LEAGUE_REMOTE_LABEL] = remote_label
+        st.session_state[STATE_LEAGUE_REMOTE_DESCRIPTION] = remote_description
 
 
 def get_selected_mode() -> str:
@@ -271,6 +429,26 @@ def get_selected_postgres_url() -> str:
 def get_selected_environment_name() -> str:
     ensure_db_state()
     return st.session_state[STATE_DB_ENVIRONMENT]
+
+
+def get_selected_remote_database_key() -> str:
+    ensure_db_state()
+    return st.session_state.get(STATE_LEAGUE_REMOTE_KEY, "")
+
+
+def get_selected_remote_database_url() -> str:
+    ensure_db_state()
+    return st.session_state.get(STATE_LEAGUE_REMOTE_URL, "")
+
+
+def get_selected_remote_database_label() -> str:
+    ensure_db_state()
+    return st.session_state.get(STATE_LEAGUE_REMOTE_LABEL, "")
+
+
+def get_selected_remote_database_description() -> str:
+    ensure_db_state()
+    return st.session_state.get(STATE_LEAGUE_REMOTE_DESCRIPTION, "")
 
 
 def get_mode_index(mode: str) -> int:
@@ -329,6 +507,10 @@ def _apply_database(
             "database_url": get_database_url(hide_password=False),
             "database_url_masked": get_database_url(hide_password=True),
             "sqlite_path": str(resolved_path),
+            "postgres_url": "",
+            "remote_key": "",
+            "remote_label": "",
+            "remote_description": "",
         }
 
     if mode == DB_MODE_POSTGRES:
@@ -352,10 +534,17 @@ def _apply_database(
             "environment_name": environment_name,
             "environment_label": DB_ENV_LABELS[environment_name],
             "environment_description": get_environment_description(environment_name),
-            "label": DB_ENV_LABELS[environment_name],
+            "label": st.session_state.get(STATE_LEAGUE_REMOTE_LABEL, "Remoto"),
             "database_url": get_database_url(hide_password=False),
             "database_url_masked": get_database_url(hide_password=True),
             "sqlite_path": None,
+            "postgres_url": clean_url,
+            "remote_key": st.session_state.get(STATE_LEAGUE_REMOTE_KEY, ""),
+            "remote_label": st.session_state.get(STATE_LEAGUE_REMOTE_LABEL, ""),
+            "remote_description": st.session_state.get(
+                STATE_LEAGUE_REMOTE_DESCRIPTION,
+                "",
+            ),
         }
 
     raise ValueError(f"Modalità database non supportata: {mode}")
@@ -367,6 +556,9 @@ def set_database_selection(
     sqlite_path: str,
     postgres_url: str,
     environment_name: str | None = None,
+    remote_key: str | None = None,
+    remote_label: str = "",
+    remote_description: str = "",
 ) -> dict:
     ensure_db_state()
 
@@ -378,27 +570,95 @@ def set_database_selection(
 
     clean_sqlite_path = sanitize_sqlite_path(sqlite_path)
     clean_postgres_url = sanitize_database_url(postgres_url)
+    clean_remote_key = sanitize_remote_database_key(remote_key)
+
+    previous_state = {
+        STATE_DB_MODE: st.session_state.get(STATE_DB_MODE, DB_MODE_SQLITE),
+        STATE_DB_ENVIRONMENT: st.session_state.get(
+            STATE_DB_ENVIRONMENT,
+            DB_ENV_LEAGUE_LOCAL,
+        ),
+        STATE_SQLITE_PATH: st.session_state.get(STATE_SQLITE_PATH, ""),
+        STATE_POSTGRES_URL: st.session_state.get(STATE_POSTGRES_URL, ""),
+        STATE_LEAGUE_LOCAL_PATH: st.session_state.get(
+            STATE_LEAGUE_LOCAL_PATH,
+            str(DEFAULT_DB_PATH.resolve()),
+        ),
+        STATE_LEAGUE_REMOTE_URL: st.session_state.get(STATE_LEAGUE_REMOTE_URL, ""),
+        STATE_LEAGUE_REMOTE_KEY: st.session_state.get(STATE_LEAGUE_REMOTE_KEY, ""),
+        STATE_LEAGUE_REMOTE_LABEL: st.session_state.get(STATE_LEAGUE_REMOTE_LABEL, ""),
+        STATE_LEAGUE_REMOTE_DESCRIPTION: st.session_state.get(
+            STATE_LEAGUE_REMOTE_DESCRIPTION,
+            "",
+        ),
+        STATE_ACTIVE_DB_INFO: st.session_state.get(STATE_ACTIVE_DB_INFO),
+    }
+
+    if mode == DB_MODE_SQLITE:
+        staged_sqlite_path = clean_sqlite_path or str(DEFAULT_DB_PATH.resolve())
+        staged_postgres_url = ""
+        staged_remote_key = ""
+        staged_remote_label = ""
+        staged_remote_description = ""
+
+    elif mode == DB_MODE_POSTGRES:
+        remote_entry = get_remote_database_entry(clean_remote_key)
+
+        if remote_entry is not None:
+            staged_remote_key = remote_entry["key"]
+            staged_remote_label = remote_entry["label"]
+            staged_remote_description = remote_entry["description"]
+            staged_postgres_url = remote_entry["url"]
+        else:
+            staged_remote_key = clean_remote_key
+            staged_remote_label = (remote_label or "Remoto personalizzato").strip()
+            staged_remote_description = (remote_description or "").strip()
+            staged_postgres_url = clean_postgres_url
+
+        if not staged_postgres_url:
+            raise ValueError("Inserisci una DATABASE_URL valida per PostgreSQL.")
+
+        staged_sqlite_path = ""
+
+    else:
+        raise ValueError(f"Modalità database non supportata: {mode}")
 
     st.session_state[STATE_DB_MODE] = mode
     st.session_state[STATE_DB_ENVIRONMENT] = resolved_environment_name
-
-    if mode == DB_MODE_SQLITE:
-        stored_sqlite_path = clean_sqlite_path or str(DEFAULT_DB_PATH.resolve())
-        st.session_state[STATE_LEAGUE_LOCAL_PATH] = stored_sqlite_path
-        st.session_state[STATE_SQLITE_PATH] = stored_sqlite_path
-        st.session_state[STATE_POSTGRES_URL] = ""
-
-    elif mode == DB_MODE_POSTGRES:
-        st.session_state[STATE_LEAGUE_REMOTE_URL] = clean_postgres_url
-        st.session_state[STATE_SQLITE_PATH] = ""
-        st.session_state[STATE_POSTGRES_URL] = clean_postgres_url
-
-    info = _apply_database(
-        mode=mode,
-        sqlite_path=st.session_state[STATE_SQLITE_PATH],
-        postgres_url=st.session_state[STATE_POSTGRES_URL],
-        environment_name=resolved_environment_name,
+    st.session_state[STATE_SQLITE_PATH] = staged_sqlite_path
+    st.session_state[STATE_POSTGRES_URL] = staged_postgres_url
+    st.session_state[STATE_LEAGUE_LOCAL_PATH] = (
+        staged_sqlite_path or previous_state[STATE_LEAGUE_LOCAL_PATH]
     )
+    st.session_state[STATE_LEAGUE_REMOTE_URL] = staged_postgres_url
+    st.session_state[STATE_LEAGUE_REMOTE_KEY] = staged_remote_key
+    st.session_state[STATE_LEAGUE_REMOTE_LABEL] = staged_remote_label
+    st.session_state[STATE_LEAGUE_REMOTE_DESCRIPTION] = staged_remote_description
+
+    try:
+        info = _apply_database(
+            mode=mode,
+            sqlite_path=staged_sqlite_path,
+            postgres_url=staged_postgres_url,
+            environment_name=resolved_environment_name,
+        )
+    except Exception:
+        for state_key, previous_value in previous_state.items():
+            st.session_state[state_key] = previous_value
+
+        try:
+            restored_info = _apply_database(
+                mode=previous_state[STATE_DB_MODE],
+                sqlite_path=previous_state[STATE_SQLITE_PATH],
+                postgres_url=previous_state[STATE_POSTGRES_URL],
+                environment_name=previous_state[STATE_DB_ENVIRONMENT],
+            )
+            st.session_state[STATE_ACTIVE_DB_INFO] = restored_info
+        except Exception:
+            if previous_state[STATE_ACTIVE_DB_INFO] is not None:
+                st.session_state[STATE_ACTIVE_DB_INFO] = previous_state[STATE_ACTIVE_DB_INFO]
+
+        raise
 
     st.session_state[STATE_ACTIVE_DB_INFO] = info
     return info
