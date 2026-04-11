@@ -1,0 +1,47 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+# Project config for wrestling_league
+#
+# Obiettivi:
+# - comportamento conservativo
+# - patch locali e incrementali
+# - repo locale come riferimento principale
+# - rete disponibile quando serve
+# - nessun lock rigido su un singolo modello
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+web_search = "cached"
+
+# Non fissiamo il modello qui:
+# - puoi cambiarlo dal selettore del client Codex
+# - evitiamo lock-in su una versione specifica
+
+project_doc_max_bytes = 65536
+project_root_markers = [".git"]
+file_opener = "vscode"
+
+hide_agent_reasoning = true
+show_raw_agent_reasoning = false
+
+model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "high"
+model_reasoning_summary = "auto"
+model_verbosity = "medium"
+
+allow_login_shell = false
+
+[history]
+persistence = "save-all"
+
+[sandbox_workspace_write]
+writable_roots = []
+network_access = true
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false

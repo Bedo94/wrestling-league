@@ -1,11 +1,11 @@
 from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, or_, select
 
 from src.database import get_session
 from src.levels import get_level_from_label
-from src.models import Athlete, Event, Match
+from src.models import Athlete, Match
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
 from src.settings import TOKEN_SETTINGS
 
@@ -39,28 +39,13 @@ def _normalize_birth_date(value: Any) -> date:
     raise ValueError("Data nascita non valida.")
 
 
-def get_token_reset_scope() -> str:
-    scope = str(TOKEN_SETTINGS.get("reset_scope", "event")).strip().lower()
-    if scope not in {"event", "season"}:
-        raise ValueError(f"Token reset_scope non valido: {scope}")
-    return scope
-
-
 def get_token_scope_label(
     *,
-    season: Optional[str] = None,
     event_id: Optional[int] = None,
 ) -> str:
-    scope = get_token_reset_scope()
-
-    if scope == "event":
-        if event_id is None:
-            return "questo evento"
-        return f"questo evento (ID {event_id})"
-
-    if season is None:
-        return "questa stagione"
-    return f"la stagione {season}"
+    if event_id is None:
+        return "questo evento"
+    return f"questo evento (ID {event_id})"
 
 
 def _get_tokens_used_in_event(
@@ -69,33 +54,9 @@ def _get_tokens_used_in_event(
     event_id: int,
     exclude_match_id: Optional[int] = None,
 ) -> int:
-    stmt = select(func.coalesce(func.sum(Match.token_cost), 0)).where(
-        Match.is_token_match.is_(True),
+    stmt = select(func.count(Match.id)).where(
         Match.token_spender_id == athlete_id,
         Match.event_id == event_id,
-    )
-
-    if exclude_match_id is not None:
-        stmt = stmt.where(Match.id != exclude_match_id)
-
-    total = session.execute(stmt).scalar_one()
-    return int(total or 0)
-
-
-def _get_tokens_used_in_season(
-    session,
-    athlete_id: int,
-    season: str,
-    exclude_match_id: Optional[int] = None,
-) -> int:
-    stmt = (
-        select(func.coalesce(func.sum(Match.token_cost), 0))
-        .join(Event, Match.event_id == Event.id)
-        .where(
-            Match.is_token_match.is_(True),
-            Match.token_spender_id == athlete_id,
-            Event.season == season,
-        )
     )
 
     if exclude_match_id is not None:
@@ -115,12 +76,7 @@ def create_athlete(
     style: str,
     level: int,
     default_weight: float,
-    token_budget: int = TOKEN_SETTINGS["default_token_budget_per_season"],
-    rating: Optional[float] = None,
 ) -> Athlete:
-    if token_budget < 0:
-        raise ValueError("Il budget token non può essere negativo.")
-
     session = get_session()
     try:
         athlete = Athlete(
@@ -133,8 +89,6 @@ def create_athlete(
             style=style,
             level=level,
             default_weight=default_weight,
-            token_budget=int(token_budget),
-            rating=rating,
             active=True,
         )
         session.add(athlete)
@@ -173,7 +127,6 @@ def list_teams() -> list[str]:
 def get_tokens_remaining(
     athlete_id: int,
     *,
-    season: Optional[str] = None,
     event_id: Optional[int] = None,
     exclude_match_id: Optional[int] = None,
 ) -> int:
@@ -183,49 +136,70 @@ def get_tokens_remaining(
         if athlete is None:
             return 0
 
-        scope = get_token_reset_scope()
+        if event_id is None:
+            raise ValueError("event_id obbligatorio per calcolare i token residui.")
 
-        if scope == "event":
-            if event_id is None:
-                raise ValueError(
-                    "event_id obbligatorio quando TOKEN_SETTINGS['reset_scope'] = 'event'."
-                )
+        used_tokens = _get_tokens_used_in_event(
+            session=session,
+            athlete_id=athlete_id,
+            event_id=event_id,
+            exclude_match_id=exclude_match_id,
+        )
 
-            used_tokens = _get_tokens_used_in_event(
-                session=session,
-                athlete_id=athlete_id,
-                event_id=event_id,
-                exclude_match_id=exclude_match_id,
-            )
-        else:
-            if season is None:
-                raise ValueError(
-                    "season obbligatoria quando TOKEN_SETTINGS['reset_scope'] = 'season'."
-                )
-
-            used_tokens = _get_tokens_used_in_season(
-                session=session,
-                athlete_id=athlete_id,
-                season=season,
-                exclude_match_id=exclude_match_id,
-            )
-
-        remaining = int(athlete.token_budget) - int(used_tokens or 0)
+        remaining = int(TOKEN_SETTINGS["default_token_budget_per_event"]) - int(
+            used_tokens or 0
+        )
         return max(0, remaining)
     finally:
         session.close()
 
 
-def get_tokens_remaining_for_season(
-    athlete_id: int,
-    season: str,
-    exclude_match_id: Optional[int] = None,
-) -> int:
-    return get_tokens_remaining(
-        athlete_id,
-        season=season,
-        exclude_match_id=exclude_match_id,
+def _count_athlete_match_references(session, athlete_id: int) -> int:
+    stmt = select(func.count(Match.id)).where(
+        or_(
+            Match.athlete_a_id == athlete_id,
+            Match.athlete_b_id == athlete_id,
+            Match.winner_id == athlete_id,
+            Match.token_spender_id == athlete_id,
+        )
     )
+    total = session.execute(stmt).scalar_one()
+    return int(total or 0)
+
+
+def _format_athlete_display_name(athlete: Athlete) -> str:
+    full_name = f"{athlete.first_name} {athlete.last_name or ''}".strip()
+    return full_name or f"ID {athlete.id}"
+
+
+def delete_athletes_if_unused(athlete_ids: list[int]) -> list[str]:
+    normalized_ids = list(dict.fromkeys(int(athlete_id) for athlete_id in athlete_ids))
+    if not normalized_ids:
+        return []
+
+    session = get_session()
+    try:
+        deleted_names: list[str] = []
+
+        with session.begin():
+            for athlete_id in normalized_ids:
+                athlete = session.get(Athlete, athlete_id)
+                if athlete is None:
+                    raise ValueError(f"Atleta con ID {athlete_id} non trovato.")
+
+                reference_count = _count_athlete_match_references(session, athlete_id)
+                if reference_count > 0:
+                    raise ValueError(
+                        f"Non puoi eliminare {_format_athlete_display_name(athlete)}: "
+                        "compare già in uno o più incontri."
+                    )
+
+                deleted_names.append(_format_athlete_display_name(athlete))
+                session.delete(athlete)
+
+        return deleted_names
+    finally:
+        session.close()
 
 
 def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:
@@ -257,19 +231,15 @@ def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:
                         f"Stile non valido per l'atleta ID {athlete_id}: {style}"
                     )
 
-                level_label = str(row["Livello"]).strip()
+                level_label = str(
+                    row.get("Livello assegnato", row.get("Livello", ""))
+                ).strip()
                 level = get_level_from_label(level_label)
 
                 default_weight = float(row["Peso"])
                 if default_weight <= 0:
                     raise ValueError(
                         f"Peso non valido per l'atleta ID {athlete_id}: {default_weight}"
-                    )
-
-                token_budget = int(row["Token budget"])
-                if token_budget < 0:
-                    raise ValueError(
-                        f"Budget token non valido per l'atleta ID {athlete_id}: {token_budget}"
                     )
 
                 athlete.first_name = first_name
@@ -281,7 +251,6 @@ def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:
                 athlete.style = style
                 athlete.level = level
                 athlete.default_weight = default_weight
-                athlete.token_budget = token_budget
                 athlete.active = bool(row.get("Attivo", True))
 
                 updated_count += 1

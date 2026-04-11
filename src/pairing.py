@@ -1,8 +1,10 @@
+from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
+from src.athlete_level_service import build_athlete_level_profile_map
 from src.models import Athlete, Match
-from src.ratings import get_start_rating
+from src.ratings import get_default_start_rating
 from src.settings import MATCHMAKING_SETTINGS
 
 
@@ -13,10 +15,13 @@ def calculate_age(birth_date: date, reference_date: date) -> int:
     return age
 
 
-def get_effective_rating(athlete: Athlete) -> float:
-    if athlete.rating is not None:
-        return float(athlete.rating)
-    return float(get_start_rating(athlete.level))
+def get_effective_rating(
+    athlete: Athlete,
+    rating_by_athlete_id: Mapping[int, float] | None = None,
+) -> float:
+    if rating_by_athlete_id is not None and athlete.id in rating_by_athlete_id:
+        return float(rating_by_athlete_id[athlete.id])
+    return float(get_default_start_rating())
 
 
 def count_previous_matches(matches: list[Match], athlete_a_id: int, athlete_b_id: int) -> int:
@@ -59,8 +64,15 @@ def generate_candidate_pairs(
     avoid_rematches: bool = True,
     same_sex_only: bool = False,
     exclude_same_team: bool = False,
+    rating_by_athlete_id: Mapping[int, float] | None = None,
+    all_matches: list[Match] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
+    level_profiles_by_athlete_id = build_athlete_level_profile_map(
+        athletes=athletes,
+        matches=all_matches if all_matches is not None else matches,
+        rating_by_athlete_id=rating_by_athlete_id,
+    )
 
     for i in range(len(athletes)):
         athlete_a = athletes[i]
@@ -86,7 +98,11 @@ def generate_candidate_pairs(
             if weight_diff > max_weight_diff:
                 continue
 
-            level_diff = abs(int(athlete_a.level) - int(athlete_b.level))
+            athlete_a_level_profile = level_profiles_by_athlete_id[athlete_a.id]
+            athlete_b_level_profile = level_profiles_by_athlete_id[athlete_b.id]
+            assigned_level_a = int(athlete_a_level_profile["assigned_level"])
+            assigned_level_b = int(athlete_b_level_profile["assigned_level"])
+            level_diff = abs(assigned_level_a - assigned_level_b)
             if level_diff > max_level_diff:
                 continue
 
@@ -97,8 +113,14 @@ def generate_candidate_pairs(
             if max_age_diff is not None and age_diff > max_age_diff:
                 continue
 
-            rating_a = get_effective_rating(athlete_a)
-            rating_b = get_effective_rating(athlete_b)
+            rating_a = get_effective_rating(
+                athlete_a,
+                rating_by_athlete_id=rating_by_athlete_id,
+            )
+            rating_b = get_effective_rating(
+                athlete_b,
+                rating_by_athlete_id=rating_by_athlete_id,
+            )
             rating_diff = abs(rating_a - rating_b)
 
             previous_matches = count_previous_matches(matches, athlete_a.id, athlete_b.id)
@@ -135,6 +157,12 @@ def generate_candidate_pairs(
                     "weight_diff": round(weight_diff, 2),
                     "level_diff": level_diff,
                     "level_gap_label": describe_level_gap(level_diff),
+                    "assigned_level_a": assigned_level_a,
+                    "assigned_level_b": assigned_level_b,
+                    "suggested_level_a": athlete_a_level_profile["suggested_level"],
+                    "suggested_level_b": athlete_b_level_profile["suggested_level"],
+                    "valid_match_count_a": int(athlete_a_level_profile["valid_match_count"]),
+                    "valid_match_count_b": int(athlete_b_level_profile["valid_match_count"]),
                     "rating_a": round(rating_a, 2),
                     "rating_b": round(rating_b, 2),
                     "rating_diff": round(rating_diff, 2),

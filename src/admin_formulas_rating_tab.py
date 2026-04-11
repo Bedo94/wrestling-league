@@ -11,30 +11,30 @@ from src.admin_formulas_shared import (
     apply_pending_reset,
     format_athlete_preview_label,
     format_winner_fallback_label,
+    get_formula_draft_config,
     get_typed_value,
     get_widget_value,
     queue_group_reset,
+    reset_formula_group_draft,
     render_flash_message,
     render_group_inputs,
+    save_formula_group_draft,
     set_flash_message,
 )
 from src.database import get_session
-from src.formula_config_service import (
-    get_full_config,
-    reset_group_to_defaults,
-    save_group_parameters,
-)
+from src.levels import get_level_label
 from src.models import Athlete
 from src.pairing import calculate_age
 from src.ratings import (
-    get_start_rating,
+    build_current_rating_map,
+    get_default_start_rating,
     preview_rating_update,
     recompute_ratings,
 )
 
 
 def render_rating_tab() -> None:
-    config = get_full_config()
+    config = get_formula_draft_config()
     rating_config: dict[str, Any] = config.get("ratings", {})
 
     apply_pending_reset("ratings", "rating")
@@ -152,56 +152,68 @@ dove:
         with st.form("rating_form"):
             ratings_inputs = render_group_inputs(rating_config, rating_order, "rating")
 
+            st.caption(
+                """
+- `default_start_rating`: rating iniziale comune usato per tutti gli atleti quando entrano nella lega
+- `level_start_ratings`: mappa di soglie che traduce il rating corrente in un livello suggerito
+"""
+            )
+
             if "level_start_ratings" in rating_config:
                 level_start_ratings = rating_config["level_start_ratings"]
                 if isinstance(level_start_ratings, dict) and level_start_ratings:
                     level_start_df = pd.DataFrame(
                         [
-                            {"Level": int(level), "Rating iniziale": float(value)}
+                            {
+                                "Descrizione": get_level_label(int(level)),
+                                "Level": int(level),
+                                "Soglia rating": float(value),
+                            }
                             for level, value in sorted(level_start_ratings.items())
                         ]
                     )
-                    st.caption("Rating iniziali per livello")
-                    st.dataframe(
+                    st.caption("Soglie rating usate per suggerire il livello")
+                    edited_level_start_df = st.data_editor(
                         level_start_df,
-                        use_container_width=True,
+                        num_rows="fixed",
                         hide_index=True,
+                        use_container_width=True,
+                        disabled=["Descrizione", "Level"],
                     )
                 else:
                     st.caption(
-                        f"Valori iniziali per livello (sola lettura): {level_start_ratings}"
+                        f"Soglie rating per livello suggerito (sola lettura): {level_start_ratings}"
                     )
+                    edited_level_start_df = None
+            else:
+                edited_level_start_df = None
 
-            col1, col2, col3 = st.columns(3)
-            save_clicked = col1.form_submit_button("Salva parametri rating")
-            save_and_recalc_clicked = col2.form_submit_button("Salva e ricalcola rating")
-            reset_clicked = col3.form_submit_button("Ripristina default rating")
+            col1, col2 = st.columns(2)
+            save_and_apply_clicked = col1.form_submit_button("Salva e applica rating")
+            reset_clicked = col2.form_submit_button("Ripristina default rating")
 
-    if save_clicked:
-        save_group_parameters("ratings", ratings_inputs)
-        set_flash_message(
-            "success",
-            "Parametri rating salvati correttamente.",
-            target="ratings",
-        )
-        st.rerun()
+    if edited_level_start_df is not None:
+        ratings_inputs["level_start_ratings"] = {
+            int(row["Level"]): float(row["Soglia rating"])
+            for row in edited_level_start_df.to_dict(orient="records")
+        }
 
-    if save_and_recalc_clicked:
-        save_group_parameters("ratings", ratings_inputs)
+    if save_and_apply_clicked:
+        save_formula_group_draft("ratings", ratings_inputs)
         recompute_ratings()
         set_flash_message(
             "success",
-            "Parametri rating salvati e rating ricalcolati completamente.",
+            "Parametri rating applicati. Rating e anteprime aggiornati.",
             target="ratings",
         )
         st.rerun()
 
     if reset_clicked:
-        reset_group_to_defaults("ratings")
+        reset_formula_group_draft("ratings")
         queue_group_reset("ratings", "rating")
         set_flash_message(
             "warning",
-            "Parametri rating ripristinati ai valori di default.",
+            "Parametri rating della bozza ripristinati ai valori di default.",
             target="ratings",
         )
         st.rerun()
@@ -254,16 +266,17 @@ dove:
     athlete_by_id = {athlete.id: athlete for athlete in athletes}
     athlete_a = athlete_by_id[athlete_a_id]
     athlete_b = athlete_by_id[athlete_b_id]
+    rating_by_athlete_id = build_current_rating_map()
 
     rating_a = float(
-        athlete_a.rating
-        if athlete_a.rating is not None
-        else get_start_rating(int(athlete_a.level))
+        rating_by_athlete_id[athlete_a.id]
+        if athlete_a.id in rating_by_athlete_id
+        else get_default_start_rating()
     )
     rating_b = float(
-        athlete_b.rating
-        if athlete_b.rating is not None
-        else get_start_rating(int(athlete_b.level))
+        rating_by_athlete_id[athlete_b.id]
+        if athlete_b.id in rating_by_athlete_id
+        else get_default_start_rating()
     )
 
     preview_k_factor = get_widget_value(
@@ -368,7 +381,7 @@ Se entrambi i punti sono zero, viene usato il vincitore di fallback; se non è d
                 "Level": int(athlete_a.level),
                 "Team": athlete_a.team or "",
                 "Rating usato": round(rating_a, 2),
-                "Rating iniziale livello": round(get_start_rating(int(athlete_a.level)), 2),
+                "Rating iniziale comune": round(get_default_start_rating(), 2),
             },
             {
                 "Atleta": athlete_b_name,
@@ -378,7 +391,7 @@ Se entrambi i punti sono zero, viene usato il vincitore di fallback; se non è d
                 "Level": int(athlete_b.level),
                 "Team": athlete_b.team or "",
                 "Rating usato": round(rating_b, 2),
-                "Rating iniziale livello": round(get_start_rating(int(athlete_b.level)), 2),
+                "Rating iniziale comune": round(get_default_start_rating(), 2),
             },
         ]
     )

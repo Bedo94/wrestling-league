@@ -7,21 +7,32 @@ import pandas as pd
 import streamlit as st
 
 from src.athletes import (
-    get_token_reset_scope,
     get_tokens_remaining,
     list_athletes,
 )
 from src.db_runtime import bootstrap_database_from_state
 from src.events import list_events
 from src.levels import get_level_label
-from src.matches import create_match, delete_match, list_matches, replace_match
+from src.matches import (
+    build_match_points_map,
+    create_match,
+    delete_match,
+    list_matches,
+    replace_match,
+)
 from src.models import Match
 from src.ratings import recompute_ratings
 from src.reference_data import WIN_TYPE_OPTIONS
 from src.scoring import calculate_match_points, validate_weight_difference
-from src.settings import TOKEN_SETTINGS
 from src.table_component import render_table_component
 from src.table_specs import MATCHES_TABLE_SPEC
+from src.token_usage import (
+    TOKEN_USED_BY_ATHLETE_A,
+    TOKEN_USED_BY_ATHLETE_B,
+    TokenUsedBy,
+    get_token_spender_id_from_used_by,
+    get_token_used_by_from_spender_id,
+)
 
 MATCH_SAVE_FLASH_KEY = "matches_save_flash"
 MATCH_DELETE_FLASH_KEY = "matches_delete_flash"
@@ -42,8 +53,8 @@ MATCH_RAW_SCORE_B_KEY = "match_raw_score_b"
 MATCH_WINNER_CHOICE_KEY = "match_winner_choice"
 MATCH_WIN_TYPE_KEY = "match_win_type"
 MATCH_NOTES_KEY = "match_notes"
-MATCH_IS_TOKEN_MATCH_KEY = "match_is_token_match"
-MATCH_TOKEN_SPENDER_CHOICE_KEY = "match_token_spender_choice"
+MATCH_TOKEN_ENABLED_KEY = "match_token_enabled"
+MATCH_TOKEN_USED_BY_KEY = "match_token_used_by"
 
 
 def calculate_age(birth_date: date, reference_date: date) -> int:
@@ -66,7 +77,7 @@ def athlete_label(athlete, reference_date: date) -> str:
 
 
 def event_label(event) -> str:
-    return f"{event.name} — {event.event_date} — Stagione {event.season}"
+    return f"{event.name} — {event.event_date}"
 
 
 def format_athlete_name(athlete) -> str:
@@ -134,8 +145,8 @@ def reset_match_form(event_ids, athlete_ids, athletes_map) -> None:
     st.session_state[MATCH_WINNER_CHOICE_KEY] = "Atleta A"
     st.session_state[MATCH_WIN_TYPE_KEY] = WIN_TYPE_OPTIONS[0]
     st.session_state[MATCH_NOTES_KEY] = ""
-    st.session_state[MATCH_IS_TOKEN_MATCH_KEY] = False
-    st.session_state[MATCH_TOKEN_SPENDER_CHOICE_KEY] = "Atleta A"
+    st.session_state[MATCH_TOKEN_ENABLED_KEY] = False
+    st.session_state[MATCH_TOKEN_USED_BY_KEY] = TOKEN_USED_BY_ATHLETE_A
 
 
 def ensure_match_form_state(event_ids, athlete_ids, athletes_map) -> None:
@@ -184,11 +195,11 @@ def ensure_match_form_state(event_ids, athlete_ids, athletes_map) -> None:
     if MATCH_NOTES_KEY not in st.session_state:
         st.session_state[MATCH_NOTES_KEY] = ""
 
-    if MATCH_IS_TOKEN_MATCH_KEY not in st.session_state:
-        st.session_state[MATCH_IS_TOKEN_MATCH_KEY] = False
+    if MATCH_TOKEN_ENABLED_KEY not in st.session_state:
+        st.session_state[MATCH_TOKEN_ENABLED_KEY] = False
 
-    if MATCH_TOKEN_SPENDER_CHOICE_KEY not in st.session_state:
-        st.session_state[MATCH_TOKEN_SPENDER_CHOICE_KEY] = "Atleta A"
+    if MATCH_TOKEN_USED_BY_KEY not in st.session_state:
+        st.session_state[MATCH_TOKEN_USED_BY_KEY] = TOKEN_USED_BY_ATHLETE_A
 
     if MATCH_EDIT_ID_KEY not in st.session_state:
         st.session_state[MATCH_EDIT_ID_KEY] = None
@@ -234,12 +245,15 @@ def load_match_into_form(match: Match) -> None:
     )
     st.session_state[MATCH_WIN_TYPE_KEY] = match.win_type
     st.session_state[MATCH_NOTES_KEY] = match.notes or ""
-    st.session_state[MATCH_IS_TOKEN_MATCH_KEY] = bool(match.is_token_match)
-
-    if match.token_spender_id == match.athlete_b_id:
-        st.session_state[MATCH_TOKEN_SPENDER_CHOICE_KEY] = "Atleta B"
-    else:
-        st.session_state[MATCH_TOKEN_SPENDER_CHOICE_KEY] = "Atleta A"
+    token_used_by = get_token_used_by_from_spender_id(
+        athlete_a_id=match.athlete_a_id,
+        athlete_b_id=match.athlete_b_id,
+        token_spender_id=match.token_spender_id,
+    )
+    st.session_state[MATCH_TOKEN_ENABLED_KEY] = token_used_by is not None
+    st.session_state[MATCH_TOKEN_USED_BY_KEY] = (
+        token_used_by or TOKEN_USED_BY_ATHLETE_A
+    )
 
 
 def get_last_selected_match(
@@ -257,6 +271,7 @@ def _build_matches_dataframe(
     matches: list[Match],
     athletes_map,
     events_map,
+    match_points_by_id,
 ) -> pd.DataFrame:
     rows = []
     for match in matches:
@@ -267,13 +282,16 @@ def _build_matches_dataframe(
             athletes_map.get(match.token_spender_id) if match.token_spender_id else None
         )
         event = events_map.get(match.event_id)
+        match_points = match_points_by_id.get(
+            match.id,
+            {"points_a": 0.0, "points_b": 0.0},
+        )
 
         rows.append(
             {
                 "ID": match.id,
                 "Evento": format_event_name(event, match.event_id),
                 "Data": format_event_date(event),
-                "Stagione": event.season if event is not None else "",
                 "Stile": match.style,
                 "Atleta A": format_athlete_name(athlete_a),
                 "Peso A": match.weight_a,
@@ -285,10 +303,10 @@ def _build_matches_dataframe(
                 "Punti B": match.raw_score_b,
                 "Vincitore": format_athlete_name(winner),
                 "Modo vittoria": match.win_type,
-                "Token": "Sì" if match.is_token_match else "",
+                "Token": "Sì" if match.token_spender_id is not None else "",
                 "Spende token": format_athlete_name(token_spender),
-                "Punti classifica A": match.points_a if match.points_a is not None else "N.D.",
-                "Punti classifica B": match.points_b if match.points_b is not None else "N.D.",
+                "Punti classifica A": match_points["points_a"],
+                "Punti classifica B": match_points["points_b"],
                 "Note": match.notes or "",
             }
         )
@@ -429,8 +447,6 @@ def _render_match_form(
             key=MATCH_RAW_SCORE_B_KEY,
         )
 
-    st.caption(f"Stagione evento: {selected_event.season}")
-
     winner_col1, winner_col2 = st.columns(2)
     current_winner_choice = st.session_state.get(MATCH_WINNER_CHOICE_KEY, "Atleta A")
 
@@ -466,19 +482,23 @@ def _render_match_form(
         key=MATCH_WIN_TYPE_KEY,
     )
 
-    is_token_match = st.checkbox(
-        "Match a token",
-        key=MATCH_IS_TOKEN_MATCH_KEY,
+    token_enabled = st.checkbox(
+        "Usa token in questo incontro",
+        key=MATCH_TOKEN_ENABLED_KEY,
+        help=(
+            "Attivalo se uno dei due atleti decide di usare un token in questo match. "
+            "Il costo è sempre 1 token. "
+            "I token disponibili si azzerano a ogni nuovo evento."
+        ),
     )
 
     token_spender_id: Optional[int] = None
-    token_cost = int(TOKEN_SETTINGS["default_token_cost"])
 
-    if is_token_match:
+    if token_enabled:
         st.markdown("#### Chi spende il token?")
-        current_token_spender_choice = st.session_state.get(
-            MATCH_TOKEN_SPENDER_CHOICE_KEY,
-            "Atleta A",
+        current_token_used_by: TokenUsedBy = st.session_state.get(
+            MATCH_TOKEN_USED_BY_KEY,
+            TOKEN_USED_BY_ATHLETE_A,
         )
 
         token_col1, token_col2 = st.columns(2)
@@ -486,52 +506,59 @@ def _render_match_form(
         with token_col1:
             if st.button(
                 format_athlete_name(athlete_a),
-                type="primary" if current_token_spender_choice == "Atleta A" else "secondary",
+                type=(
+                    "primary"
+                    if current_token_used_by == TOKEN_USED_BY_ATHLETE_A
+                    else "secondary"
+                ),
                 use_container_width=True,
                 key="token_spender_button_a",
             ):
-                if st.session_state.get(MATCH_TOKEN_SPENDER_CHOICE_KEY) != "Atleta A":
-                    st.session_state[MATCH_TOKEN_SPENDER_CHOICE_KEY] = "Atleta A"
+                if st.session_state.get(MATCH_TOKEN_USED_BY_KEY) != TOKEN_USED_BY_ATHLETE_A:
+                    st.session_state[MATCH_TOKEN_USED_BY_KEY] = TOKEN_USED_BY_ATHLETE_A
                     st.rerun()
 
         with token_col2:
             if st.button(
                 format_athlete_name(athlete_b),
-                type="primary" if current_token_spender_choice == "Atleta B" else "secondary",
+                type=(
+                    "primary"
+                    if current_token_used_by == TOKEN_USED_BY_ATHLETE_B
+                    else "secondary"
+                ),
                 use_container_width=True,
                 key="token_spender_button_b",
             ):
-                if st.session_state.get(MATCH_TOKEN_SPENDER_CHOICE_KEY) != "Atleta B":
-                    st.session_state[MATCH_TOKEN_SPENDER_CHOICE_KEY] = "Atleta B"
+                if st.session_state.get(MATCH_TOKEN_USED_BY_KEY) != TOKEN_USED_BY_ATHLETE_B:
+                    st.session_state[MATCH_TOKEN_USED_BY_KEY] = TOKEN_USED_BY_ATHLETE_B
                     st.rerun()
 
-        token_spender_choice = st.session_state.get(
-            MATCH_TOKEN_SPENDER_CHOICE_KEY,
-            "Atleta A",
+        token_used_by: TokenUsedBy = st.session_state.get(
+            MATCH_TOKEN_USED_BY_KEY,
+            TOKEN_USED_BY_ATHLETE_A,
         )
-        token_spender = athlete_a if token_spender_choice == "Atleta A" else athlete_b
+        token_spender = (
+            athlete_a
+            if token_used_by == TOKEN_USED_BY_ATHLETE_A
+            else athlete_b
+        )
         editing_match_id = st.session_state.get(MATCH_EDIT_ID_KEY)
 
         remaining_tokens = get_tokens_remaining(
             athlete_id=token_spender.id,
-            season=selected_event.season,
             event_id=selected_event.id,
             exclude_match_id=editing_match_id,
         )
+        st.caption(
+            f"{format_athlete_name(token_spender)} ha {remaining_tokens} token disponibili "
+            f"per questo evento."
+        )
 
-        token_scope = get_token_reset_scope()
-        if token_scope == "event":
-            st.caption(
-                f"{format_athlete_name(token_spender)} ha {remaining_tokens} token disponibili "
-                f"per questo evento."
-            )
-        else:
-            st.caption(
-                f"{format_athlete_name(token_spender)} ha {remaining_tokens} token disponibili "
-                f"nella stagione {selected_event.season}."
-            )
-
-        token_spender_id = token_spender.id
+        token_spender_id = get_token_spender_id_from_used_by(
+            athlete_a_id=athlete_a.id,
+            athlete_b_id=athlete_b.id,
+            token_used_by=token_used_by,
+        )
 
     notes = st.text_area("Note", key=MATCH_NOTES_KEY)
 
@@ -590,9 +617,7 @@ def _render_match_form(
                 event_date=selected_event.event_date,
                 winner_id=winner_id,
                 win_type=win_type,
-                is_token_match=bool(is_token_match),
                 token_spender_id=token_spender_id,
-                token_cost=token_cost,
                 notes=notes,
             )
             action_label = "salvato"
@@ -616,9 +641,7 @@ def _render_match_form(
                 event_date=selected_event.event_date,
                 winner_id=winner_id,
                 win_type=win_type,
-                is_token_match=bool(is_token_match),
                 token_spender_id=token_spender_id,
-                token_cost=token_cost,
                 notes=notes,
             )
             action_label = "corretto"
@@ -637,8 +660,8 @@ def _render_match_form(
             "success",
             (
                 f"Incontro {action_label}. "
-                f"Punti classifica A = {match.points_a:.2f}, "
-                f"Punti classifica B = {match.points_b:.2f}. "
+                f"Punti classifica A = {preview['total_points_a']:.2f}, "
+                f"Punti classifica B = {preview['total_points_b']:.2f}. "
                 f"Dettaglio: A(base={preview['result_base_a']}, bonus={preview['performance_bonus_a']}), "
                 f"B(base={preview['result_base_b']}, bonus={preview['performance_bonus_b']})."
             ),
@@ -780,10 +803,12 @@ def render_matches_page() -> None:
     ensure_match_form_state(event_ids, athlete_ids, athletes_map)
 
     matches = list_matches()
+    match_points_by_id = build_match_points_map()
     matches_df = _build_matches_dataframe(
         matches=matches,
         athletes_map=athletes_map,
         events_map=events_map,
+        match_points_by_id=match_points_by_id,
     )
 
     form_container = st.container()

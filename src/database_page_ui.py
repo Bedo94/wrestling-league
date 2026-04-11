@@ -64,6 +64,11 @@ LAST_SYNC_RESULT_KEY = "last_sync_result"
 CONFLICT_TABLE_ALL = "Tutte"
 CONFLICT_REASON_ALL = "Tutti"
 REMOTE_OPTION_MANUAL = "__manual__"
+SYNC_LOCAL_SQLITE_PATH_KEY = "sync_local_sqlite_path"
+SYNC_REMOTE_OPTION_KEY = "sync_remote_option"
+SYNC_REMOTE_LABEL_KEY = "sync_remote_label"
+SYNC_REMOTE_DESCRIPTION_KEY = "sync_remote_description"
+SYNC_REMOTE_URL_KEY = "sync_remote_url"
 
 
 def get_location_index(location: str) -> int:
@@ -106,22 +111,159 @@ def build_connection_config(environment_name: str) -> dict[str, str]:
     }
 
 
+def ensure_sync_selection_state() -> None:
+    configured_remotes = get_configured_remote_databases()
+    selected_remote_key = get_selected_remote_database_key()
+    selected_remote_url = get_selected_remote_database_url()
+    selected_remote_label = get_selected_remote_database_label()
+    selected_remote_description = get_selected_remote_database_description()
+
+    if SYNC_LOCAL_SQLITE_PATH_KEY not in st.session_state:
+        st.session_state[SYNC_LOCAL_SQLITE_PATH_KEY] = get_league_local_sqlite_path()
+
+    if SYNC_REMOTE_OPTION_KEY not in st.session_state:
+        if selected_remote_key in configured_remotes:
+            st.session_state[SYNC_REMOTE_OPTION_KEY] = selected_remote_key
+        elif configured_remotes:
+            st.session_state[SYNC_REMOTE_OPTION_KEY] = next(iter(configured_remotes.keys()))
+        else:
+            st.session_state[SYNC_REMOTE_OPTION_KEY] = REMOTE_OPTION_MANUAL
+
+    if SYNC_REMOTE_LABEL_KEY not in st.session_state:
+        st.session_state[SYNC_REMOTE_LABEL_KEY] = selected_remote_label
+
+    if SYNC_REMOTE_DESCRIPTION_KEY not in st.session_state:
+        st.session_state[SYNC_REMOTE_DESCRIPTION_KEY] = selected_remote_description
+
+    if SYNC_REMOTE_URL_KEY not in st.session_state:
+        st.session_state[SYNC_REMOTE_URL_KEY] = selected_remote_url
+
+
+def get_selected_sync_remote_entry() -> dict[str, str]:
+    ensure_sync_selection_state()
+
+    configured_remotes = get_configured_remote_databases()
+    chosen_option = st.session_state.get(SYNC_REMOTE_OPTION_KEY, REMOTE_OPTION_MANUAL)
+
+    if chosen_option != REMOTE_OPTION_MANUAL and chosen_option in configured_remotes:
+        return dict(configured_remotes[chosen_option])
+
+    return {
+        "key": sanitize_remote_database_key(
+            st.session_state.get(SYNC_REMOTE_LABEL_KEY, "")
+        ),
+        "label": (st.session_state.get(SYNC_REMOTE_LABEL_KEY, "") or "").strip(),
+        "description": (
+            st.session_state.get(SYNC_REMOTE_DESCRIPTION_KEY, "") or ""
+        ).strip(),
+        "url": (st.session_state.get(SYNC_REMOTE_URL_KEY, "") or "").strip(),
+    }
+
+
+def build_sync_connection_config(environment_name: str) -> dict[str, str]:
+    ensure_sync_selection_state()
+    location = get_environment_location(environment_name)
+
+    if location == DB_LOCATION_LOCAL:
+        return {
+            "mode": DB_MODE_SQLITE,
+            "sqlite_path": st.session_state.get(
+                SYNC_LOCAL_SQLITE_PATH_KEY,
+                get_league_local_sqlite_path(),
+            ),
+            "postgres_url": "",
+        }
+
+    selected_remote = get_selected_sync_remote_entry()
+    return {
+        "mode": DB_MODE_POSTGRES,
+        "sqlite_path": "",
+        "postgres_url": selected_remote.get("url", ""),
+    }
+
+
 def build_conflicts_dataframe(conflicts: list[dict]) -> pd.DataFrame:
     if not conflicts:
         return pd.DataFrame(
             columns=[
-                "table",
-                "sync_id",
-                "reason",
-                "source_updated_at",
-                "target_updated_at",
-                "source_version_id",
-                "target_version_id",
-                "details",
+                "Tabella",
+                "Sync ID",
+                "Motivo",
+                "Aggiornato sorgente",
+                "Aggiornato target",
+                "Versione sorgente",
+                "Versione target",
+                "Dettagli",
             ]
         )
 
-    return pd.DataFrame(conflicts)
+    return pd.DataFrame(conflicts).rename(
+        columns={
+            "table": "Tabella",
+            "sync_id": "Sync ID",
+            "reason": "Motivo",
+            "source_updated_at": "Aggiornato sorgente",
+            "target_updated_at": "Aggiornato target",
+            "source_version_id": "Versione sorgente",
+            "target_version_id": "Versione target",
+            "details": "Dettagli",
+        }
+    )
+
+
+def build_sync_totals(summary: dict[str, dict[str, int]]) -> dict[str, int]:
+    totals = {
+        "scanned": 0,
+        "inserted": 0,
+        "updated": 0,
+        "skipped": 0,
+        "conflicts": 0,
+    }
+
+    for values in summary.values():
+        for key in totals:
+            totals[key] += int(values.get(key, 0) or 0)
+
+    return totals
+
+
+def build_sync_request_signature(
+    *,
+    source_environment: str,
+    target_environment: str,
+    source_config: dict[str, str],
+    target_config: dict[str, str],
+    changed_since: str | None,
+) -> dict[str, str]:
+    return {
+        "source_environment": source_environment,
+        "target_environment": target_environment,
+        "source_mode": source_config.get("mode", ""),
+        "source_sqlite_path": source_config.get("sqlite_path", ""),
+        "source_postgres_url": source_config.get("postgres_url", ""),
+        "target_mode": target_config.get("mode", ""),
+        "target_sqlite_path": target_config.get("sqlite_path", ""),
+        "target_postgres_url": target_config.get("postgres_url", ""),
+        "changed_since": changed_since or "",
+    }
+
+
+def has_matching_preview(
+    *,
+    current_signature: dict[str, str],
+) -> bool:
+    last_sync_result = st.session_state.get(LAST_SYNC_RESULT_KEY)
+    if not last_sync_result:
+        return False
+
+    if not last_sync_result.get("ok", False):
+        return False
+
+    if not last_sync_result.get("anteprima_sync", False):
+        return False
+
+    previous_signature = last_sync_result.get("request_signature")
+    return previous_signature == current_signature
 
 
 def build_remote_toml_snippet(
@@ -340,6 +482,68 @@ def render_remote_database_selector(*, can_edit_database: bool) -> None:
             st.error(f"Errore durante l'attivazione del database remoto: {exc}")
 
 
+def render_sync_database_selector(*, can_run_sync: bool) -> None:
+    ensure_sync_selection_state()
+
+    local_col, remote_col = st.columns(2)
+
+    with local_col:
+        st.write("**Database locale per la sync**")
+        st.text_input(
+            "Percorso SQLite locale",
+            key=SYNC_LOCAL_SQLITE_PATH_KEY,
+            disabled=not can_run_sync,
+            help="Puoi indicare un file SQLite diverso da quello attualmente attivo nell'app.",
+        )
+
+    with remote_col:
+        st.write("**Database remoto per la sync**")
+
+        configured_remotes = get_configured_remote_databases()
+        configured_keys = list(configured_remotes.keys())
+
+        if configured_keys:
+            remote_options = configured_keys + [REMOTE_OPTION_MANUAL]
+            chosen_option = st.selectbox(
+                "Remoto da usare",
+                options=remote_options,
+                format_func=lambda value: (
+                    "Personalizzato"
+                    if value == REMOTE_OPTION_MANUAL
+                    else configured_remotes[value]["label"]
+                ),
+                key=SYNC_REMOTE_OPTION_KEY,
+                disabled=not can_run_sync,
+            )
+        else:
+            chosen_option = REMOTE_OPTION_MANUAL
+            st.session_state[SYNC_REMOTE_OPTION_KEY] = REMOTE_OPTION_MANUAL
+            st.info("Nessun remoto configurato in secrets.toml. Usa la modalità personalizzata.")
+
+        if chosen_option != REMOTE_OPTION_MANUAL and chosen_option in configured_remotes:
+            selected_entry = configured_remotes[chosen_option]
+            st.caption(selected_entry["description"] or " ")
+            st.code(selected_entry["url"])
+        else:
+            st.text_input(
+                "Nome remoto",
+                key=SYNC_REMOTE_LABEL_KEY,
+                disabled=not can_run_sync,
+            )
+            st.text_area(
+                "Descrizione",
+                key=SYNC_REMOTE_DESCRIPTION_KEY,
+                disabled=not can_run_sync,
+                height=68,
+            )
+            st.text_input(
+                "DATABASE_URL PostgreSQL",
+                key=SYNC_REMOTE_URL_KEY,
+                type="password",
+                disabled=not can_run_sync,
+            )
+
+
 def render_import_export_tab(
     *,
     active_db: dict,
@@ -494,6 +698,20 @@ def render_last_sync_result() -> None:
 
     summary = last_sync_result.get("summary", {})
     if summary:
+        totals = build_sync_totals(summary)
+
+        metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
+        with metric_col1:
+            st.metric("Scansionati", totals["scanned"])
+        with metric_col2:
+            st.metric("Inseriti", totals["inserted"])
+        with metric_col3:
+            st.metric("Aggiornati", totals["updated"])
+        with metric_col4:
+            st.metric("Saltati", totals["skipped"])
+        with metric_col5:
+            st.metric("Conflitti", totals["conflicts"])
+
         summary_rows = []
         for table_name, values in summary.items():
             summary_rows.append(
@@ -507,84 +725,82 @@ def render_last_sync_result() -> None:
                 }
             )
 
-        st.dataframe(
-            pd.DataFrame(summary_rows),
-            use_container_width=True,
-            hide_index=True,
-        )
+        with st.expander("Dettaglio per tabella", expanded=False):
+            st.dataframe(
+                pd.DataFrame(summary_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     conflicts = last_sync_result.get("conflicts", [])
     conflicts_df = build_conflicts_dataframe(conflicts)
 
-    st.markdown("#### Conflitti")
-
     if conflicts_df.empty:
         st.success("Nessun conflitto rilevato.")
     else:
-        st.warning(f"Conflitti rilevati: {len(conflicts_df)}")
-
-        available_tables = [CONFLICT_TABLE_ALL] + sorted(
-            value for value in conflicts_df["table"].dropna().unique().tolist()
-        )
-        available_reasons = [CONFLICT_REASON_ALL] + sorted(
-            value for value in conflicts_df["reason"].dropna().unique().tolist()
-        )
-
-        col_filter_table, col_filter_reason = st.columns(2)
-
-        with col_filter_table:
-            selected_conflict_table = st.selectbox(
-                "Filtra per tabella",
-                options=available_tables,
-                index=0,
-                key="db_conflict_filter_table",
+        with st.expander(f"Conflitti ({len(conflicts_df)})", expanded=True):
+            available_tables = [CONFLICT_TABLE_ALL] + sorted(
+                value for value in conflicts_df["Tabella"].dropna().unique().tolist()
+            )
+            available_reasons = [CONFLICT_REASON_ALL] + sorted(
+                value for value in conflicts_df["Motivo"].dropna().unique().tolist()
             )
 
-        with col_filter_reason:
-            selected_conflict_reason = st.selectbox(
-                "Filtra per motivo",
-                options=available_reasons,
-                index=0,
-                key="db_conflict_filter_reason",
+            col_filter_table, col_filter_reason = st.columns(2)
+
+            with col_filter_table:
+                selected_conflict_table = st.selectbox(
+                    "Filtra per tabella",
+                    options=available_tables,
+                    index=0,
+                    key="db_conflict_filter_table",
+                )
+
+            with col_filter_reason:
+                selected_conflict_reason = st.selectbox(
+                    "Filtra per motivo",
+                    options=available_reasons,
+                    index=0,
+                    key="db_conflict_filter_reason",
+                )
+
+            conflict_sync_id_search = st.text_input(
+                "Cerca per sync_id",
+                value="",
+                key="db_conflict_filter_sync_id",
+            ).strip()
+
+            filtered_conflicts_df = conflicts_df.copy()
+
+            if selected_conflict_table != CONFLICT_TABLE_ALL:
+                filtered_conflicts_df = filtered_conflicts_df[
+                    filtered_conflicts_df["Tabella"] == selected_conflict_table
+                ]
+
+            if selected_conflict_reason != CONFLICT_REASON_ALL:
+                filtered_conflicts_df = filtered_conflicts_df[
+                    filtered_conflicts_df["Motivo"] == selected_conflict_reason
+                ]
+
+            if conflict_sync_id_search:
+                filtered_conflicts_df = filtered_conflicts_df[
+                    filtered_conflicts_df["Sync ID"]
+                    .fillna("")
+                    .str.contains(conflict_sync_id_search, case=False, regex=False)
+                ]
+
+            st.caption(
+                f"Conflitti mostrati: {len(filtered_conflicts_df)} / {len(conflicts_df)}"
             )
 
-        conflict_sync_id_search = st.text_input(
-            "Cerca per sync_id",
-            value="",
-            key="db_conflict_filter_sync_id",
-        ).strip()
-
-        filtered_conflicts_df = conflicts_df.copy()
-
-        if selected_conflict_table != CONFLICT_TABLE_ALL:
-            filtered_conflicts_df = filtered_conflicts_df[
-                filtered_conflicts_df["table"] == selected_conflict_table
-            ]
-
-        if selected_conflict_reason != CONFLICT_REASON_ALL:
-            filtered_conflicts_df = filtered_conflicts_df[
-                filtered_conflicts_df["reason"] == selected_conflict_reason
-            ]
-
-        if conflict_sync_id_search:
-            filtered_conflicts_df = filtered_conflicts_df[
-                filtered_conflicts_df["sync_id"]
-                .fillna("")
-                .str.contains(conflict_sync_id_search, case=False, regex=False)
-            ]
-
-        st.caption(
-            f"Conflitti mostrati: {len(filtered_conflicts_df)} / {len(conflicts_df)}"
-        )
-
-        if filtered_conflicts_df.empty:
-            st.info("Nessun conflitto corrisponde ai filtri selezionati.")
-        else:
-            st.dataframe(
-                filtered_conflicts_df,
-                use_container_width=True,
-                hide_index=True,
-            )
+            if filtered_conflicts_df.empty:
+                st.info("Nessun conflitto corrisponde ai filtri selezionati.")
+            else:
+                st.dataframe(
+                    filtered_conflicts_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     log_prefix = (
         "anteprima_sync"
@@ -607,17 +823,21 @@ def render_last_sync_result() -> None:
         f"{log_prefix}_{source_environment}_to_{target_environment}_{timestamp_part}.txt"
     )
 
-    st.download_button(
-        label="Scarica log sincronizzazione (.txt)",
-        data=last_sync_result.get("log_text", ""),
-        file_name=log_file_name,
-        mime="text/plain",
-        use_container_width=True,
-    )
+    with st.expander("Log sincronizzazione", expanded=False):
+        st.download_button(
+            label="Scarica log (.txt)",
+            data=last_sync_result.get("log_text", ""),
+            file_name=log_file_name,
+            mime="text/plain",
+            use_container_width=True,
+        )
 
 
 def render_sync_tab(*, can_run_sync: bool) -> None:
     st.subheader("Sincronizzazione dati grezzi")
+    render_sync_database_selector(can_run_sync=can_run_sync)
+
+    st.divider()
 
     sync_direction = st.radio(
         "Direzione",
@@ -628,6 +848,10 @@ def render_sync_tab(*, can_run_sync: bool) -> None:
         format_func=lambda value: SYNC_DIRECTION_LABELS[value],
         horizontal=True,
         disabled=not can_run_sync,
+        help=(
+            "La sync è one-way: copia dalla sorgente alla destinazione. "
+            "Se la sorgente è più nuova aggiorna; se la destinazione è più nuova, segnala conflitto."
+        ),
     )
 
     if sync_direction == DB_SYNC_DIRECTION_LOCAL_TO_REMOTE:
@@ -640,12 +864,26 @@ def render_sync_tab(*, can_run_sync: bool) -> None:
     source_label = LOCATION_LABELS[get_environment_location(source_environment)]
     target_label = LOCATION_LABELS[get_environment_location(target_environment)]
 
-    st.caption(f"Percorso selezionato: {source_label} → {target_label}")
+    st.caption(f"{source_label} → {target_label}")
+
+    source_config = build_sync_connection_config(source_environment)
+    target_config = build_sync_connection_config(target_environment)
+
+    sync_configuration_complete = bool(
+        (source_config["sqlite_path"] or source_config["postgres_url"])
+        and (target_config["sqlite_path"] or target_config["postgres_url"])
+    )
+
+    if not sync_configuration_complete:
+        st.warning(
+            "Configura prima sia il database locale sia quello remoto: "
+            "al momento uno dei due endpoint di sincronizzazione non è disponibile."
+        )
 
     sync_only_after_enabled = st.checkbox(
         "Sincronizza solo i record modificati dopo una certa data/ora",
         value=False,
-        disabled=not can_run_sync,
+        disabled=not can_run_sync or not sync_configuration_complete,
     )
 
     changed_since_value = None
@@ -658,14 +896,14 @@ def render_sync_tab(*, can_run_sync: bool) -> None:
                 "Data minima",
                 value=None,
                 format="DD/MM/YYYY",
-                disabled=not can_run_sync,
+                disabled=not can_run_sync or not sync_configuration_complete,
             )
 
         with col_time:
             sync_since_time = st.time_input(
                 "Ora minima",
                 value=None,
-                disabled=not can_run_sync,
+                disabled=not can_run_sync or not sync_configuration_complete,
             )
 
         if sync_since_date is not None:
@@ -678,26 +916,28 @@ def render_sync_tab(*, can_run_sync: bool) -> None:
 
             st.caption(f"Filtro applicato: {changed_since_value}")
 
-    anteprima_sync_enabled = st.checkbox(
-        "Anteprima sync",
-        value=True,
-        disabled=not can_run_sync,
-        help="Calcola inserimenti, aggiornamenti e conflitti senza salvare nulla.",
+    request_signature = build_sync_request_signature(
+        source_environment=source_environment,
+        target_environment=target_environment,
+        source_config=source_config,
+        target_config=target_config,
+        changed_since=changed_since_value,
     )
 
     if LAST_SYNC_RESULT_KEY not in st.session_state:
         st.session_state[LAST_SYNC_RESULT_KEY] = None
 
-    if st.button(
-        "Esegui sincronizzazione",
-        type="primary",
-        use_container_width=True,
-        disabled=not can_run_sync,
-    ):
-        try:
-            source_config = build_connection_config(source_environment)
-            target_config = build_connection_config(target_environment)
+    preview_ready_for_real_sync = has_matching_preview(
+        current_signature=request_signature,
+    )
 
+    if not preview_ready_for_real_sync:
+        st.warning(
+            "Esegui prima un'anteprima con questa stessa configurazione."
+        )
+
+    def _run_sync_request(*, anteprima_sync: bool) -> None:
+        try:
             result = sync_raw_data(
                 source_environment=source_environment,
                 source_mode=source_config["mode"],
@@ -708,8 +948,9 @@ def render_sync_tab(*, can_run_sync: bool) -> None:
                 target_sqlite_path=target_config["sqlite_path"],
                 target_postgres_url=target_config["postgres_url"],
                 changed_since=changed_since_value,
-                anteprima_sync=anteprima_sync_enabled,
+                anteprima_sync=anteprima_sync,
             )
+            result["request_signature"] = request_signature
 
             st.session_state[LAST_SYNC_RESULT_KEY] = result
             st.rerun()
@@ -721,14 +962,38 @@ def render_sync_tab(*, can_run_sync: bool) -> None:
                 "source_environment": source_environment,
                 "target_environment": target_environment,
                 "changed_since": changed_since_value,
-                "anteprima_sync": anteprima_sync_enabled,
+                "anteprima_sync": anteprima_sync,
                 "started_at": "",
                 "finished_at": "",
                 "summary": {},
                 "conflicts": [],
                 "log_text": f"SYNC ERROR\n==========\n{exc}",
+                "request_signature": request_signature,
             }
             st.rerun()
+
+    button_col1, button_col2 = st.columns(2)
+
+    if button_col1.button(
+        "Esegui anteprima",
+        type="primary",
+        use_container_width=True,
+        disabled=(not can_run_sync or not sync_configuration_complete),
+        help="Mostra inserimenti, aggiornamenti e conflitti senza salvare nulla.",
+    ):
+        _run_sync_request(anteprima_sync=True)
+
+    if button_col2.button(
+        "Esegui sincronizzazione",
+        use_container_width=True,
+        disabled=(
+            not can_run_sync
+            or not sync_configuration_complete
+            or not preview_ready_for_real_sync
+        ),
+        help="Abilitato solo dopo un'anteprima riuscita con la stessa configurazione.",
+    ):
+        _run_sync_request(anteprima_sync=False)
 
     render_last_sync_result()
 
@@ -748,7 +1013,7 @@ def render_database_page() -> None:
     tab_usage, tab_import_export, tab_sync = st.tabs(
         [
             "Database in uso",
-            "Import / Export",
+            "Seleziona Database",
             "Sincronizzazione",
         ]
     )

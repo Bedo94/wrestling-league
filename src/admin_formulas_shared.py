@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date
 from typing import Any
 
 import streamlit as st
 
+from src.db_runtime import get_selected_environment_name
+from src.formula_config_service import (
+    apply_full_config,
+    get_full_config,
+    get_group_defaults,
+)
 from src.models import Athlete
 from src.pairing import calculate_age
 
 FLASH_MESSAGE_KEY = "admin_formulas_flash_message"
 PENDING_RESET_GROUP_KEY = "admin_formulas_pending_reset_group"
+FORMULA_DRAFT_CONFIGS_KEY = "admin_formulas_draft_configs"
+
+FORMULA_GROUP_WIDGET_PREFIXES = {
+    "scoring": "scoring",
+    "matchmaking": "matchmaking",
+    "ratings": "rating",
+    "level_evaluation": "level_eval",
+}
 
 
 def format_label(key: str) -> str:
@@ -104,8 +119,6 @@ def queue_group_reset(group: str, prefix: str) -> None:
 
 
 def apply_pending_reset(group: str, prefix: str) -> None:
-    from src.formula_config_service import get_group_defaults
-
     pending = st.session_state.get(PENDING_RESET_GROUP_KEY)
 
     if not pending:
@@ -117,6 +130,88 @@ def apply_pending_reset(group: str, prefix: str) -> None:
     defaults = get_group_defaults(group)
     sync_widget_state(prefix, defaults)
     del st.session_state[PENDING_RESET_GROUP_KEY]
+
+
+def _get_formula_draft_store() -> dict[str, dict[str, dict[str, Any]]]:
+    return st.session_state.setdefault(FORMULA_DRAFT_CONFIGS_KEY, {})
+
+
+def get_formula_draft_config() -> dict[str, dict[str, Any]]:
+    environment_name = get_selected_environment_name()
+    store = _get_formula_draft_store()
+
+    if environment_name not in store:
+        store[environment_name] = get_full_config(environment_name=environment_name)
+
+    draft_config = store[environment_name]
+    apply_full_config(draft_config)
+    return deepcopy(draft_config)
+
+
+def replace_formula_draft_config(config: dict[str, dict[str, Any]]) -> None:
+    environment_name = get_selected_environment_name()
+    normalized_config = deepcopy(config)
+    store = _get_formula_draft_store()
+    store[environment_name] = normalized_config
+    apply_full_config(normalized_config)
+
+
+def sync_formula_draft_widgets(config: dict[str, dict[str, Any]]) -> None:
+    for group, prefix in FORMULA_GROUP_WIDGET_PREFIXES.items():
+        values = config.get(group, {})
+        if isinstance(values, dict):
+            sync_widget_state(prefix, values)
+
+    athlete_ranking = config.get("athlete_ranking", {})
+    if isinstance(athlete_ranking, dict):
+        if "ranking_method" in athlete_ranking:
+            st.session_state["athlete_ranking_ranking_method"] = athlete_ranking[
+                "ranking_method"
+            ]
+        if "min_matches_for_average" in athlete_ranking:
+            st.session_state["athlete_ranking_min_matches_for_average"] = int(
+                athlete_ranking["min_matches_for_average"]
+            )
+
+    team_ranking = config.get("team_ranking", {})
+    if isinstance(team_ranking, dict):
+        if "ranking_method" in team_ranking:
+            st.session_state["team_ranking_ranking_method"] = team_ranking[
+                "ranking_method"
+            ]
+        if "participation_bonus_per_athlete" in team_ranking:
+            st.session_state["team_ranking_participation_bonus_per_athlete"] = float(
+                team_ranking["participation_bonus_per_athlete"]
+            )
+
+
+def load_formula_draft_config(config: dict[str, dict[str, Any]]) -> None:
+    replace_formula_draft_config(config)
+    sync_formula_draft_widgets(config)
+
+
+def save_formula_group_draft(group: str, values: dict[str, Any]) -> None:
+    draft_config = get_formula_draft_config()
+    draft_config[group] = dict(values)
+    replace_formula_draft_config(draft_config)
+
+
+def reset_formula_group_draft(group: str) -> None:
+    draft_config = get_formula_draft_config()
+    draft_config[group] = get_group_defaults(group)
+    replace_formula_draft_config(draft_config)
+
+
+def reset_formula_draft_to_active_revision() -> None:
+    environment_name = get_selected_environment_name()
+    replace_formula_draft_config(get_full_config(environment_name=environment_name))
+
+
+def formula_draft_differs_from_active() -> bool:
+    environment_name = get_selected_environment_name()
+    active_config = get_full_config(environment_name=environment_name)
+    draft_config = get_formula_draft_config()
+    return draft_config != active_config
 
 
 def render_group_inputs(

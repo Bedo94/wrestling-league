@@ -493,7 +493,7 @@ def _apply_database(
         init_db()
 
         try:
-            load_config()
+            load_config(environment_name=environment_name)
         except Exception:
             pass
 
@@ -524,7 +524,7 @@ def _apply_database(
         init_db()
 
         try:
-            load_config()
+            load_config(environment_name=environment_name)
         except Exception:
             pass
 

@@ -57,11 +57,6 @@ TEAM_RANKING_SETTINGS_DEFAULTS = {
     "ranking_method": "sum_with_bonus",
 }
 
-TOKEN_SETTINGS_DEFAULTS = {
-    "default_token_budget_per_season": 4,
-    "default_token_cost": 1,
-}
-
 LEVEL_EVALUATION_SETTINGS_DEFAULTS = {
     "years_weight": 25.0,
     "matches_weight": 25.0,
@@ -89,7 +84,5 @@ ATHLETE_RANKING_SETTINGS_DEFAULTS = {
 }
 
 TOKEN_SETTINGS_DEFAULTS = {
-    "default_token_budget_per_season": 4,
-    "default_token_cost": 1,
-    "reset_scope": "event",
+    "default_token_budget_per_event": 4,
 }

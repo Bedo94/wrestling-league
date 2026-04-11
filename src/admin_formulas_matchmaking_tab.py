@@ -10,31 +10,29 @@ from sqlalchemy import select
 from src.admin_formulas_shared import (
     apply_pending_reset,
     format_athlete_preview_label,
+    get_formula_draft_config,
     get_widget_value,
     queue_group_reset,
+    reset_formula_group_draft,
     render_flash_message,
     render_group_inputs,
+    save_formula_group_draft,
     set_flash_message,
 )
 from src.database import get_session
-from src.formula_config_service import (
-    get_full_config,
-    reset_group_to_defaults,
-    save_group_parameters,
-)
 from src.matchmaking_probability_ui import render_win_probability_metrics
 from src.models import Athlete, Match
 from src.pairing import calculate_age, generate_candidate_pairs
+from src.ratings import build_current_rating_map
 
 
 def render_matchmaking_tab() -> None:
-    config = get_full_config()
+    config = get_formula_draft_config()
     matchmaking_config: dict[str, Any] = config.get("matchmaking", {})
-    ratings_config: dict[str, Any] = config.get("ratings", {})
 
     apply_pending_reset("matchmaking", "matchmaking")
 
-    st.subheader("Formula matchmaking (indice di disomogeneità)")
+    st.subheader("Formula matchmaking (indice di disomogeneita)")
 
     st.info(
         """
@@ -43,15 +41,13 @@ Il matchmaking usa il **mismatch** per valutare quanto una coppia sia adatta ed 
 In pratica:
 - genera le coppie candidate compatibili con i vincoli scelti
 - calcola il mismatch per ogni coppia
-- privilegia le coppie con mismatch più basso
-
-Quindi il mismatch è il vero criterio con cui il sistema confronta la qualità degli accoppiamenti.
+- privilegia le coppie con mismatch piu basso
 """
     )
 
     st.markdown(
         r"""
-L'indice di disomogeneità tra due atleti A e B è calcolato così:
+L'indice di disomogeneita tra due atleti A e B e calcolato cosi:
 
 $$
 mismatch =
@@ -61,33 +57,12 @@ mismatch =
 +
 \left(\frac{|rating_A - rating_B|}{rating\_divisor}\right)
 +
-(|età_A - età_B| \times age\_factor)
+(|eta_A - eta_B| \times age\_factor)
 +
 (\text{rematch\_count} \times rematch\_penalty)
 $$
 """
     )
-
-    with st.expander("Cosa cambia tra mismatch e rating"):
-        st.markdown(
-            """
-- la **probabilità Elo / rating** dice chi è favorito in base alla forza competitiva stimata
-- il **mismatch** dice quanto l'accoppiamento è appropriato nel complesso
-
-Quindi:
-- il rating è un **indicatore di pronostico**
-- il mismatch è un **criterio di qualità dell'accoppiamento**
-
-Il rating da solo non basta per costruire match equilibrati, perché non considera direttamente:
-- differenza di peso
-- differenza di level
-- differenza di età
-- rematch già avvenuti
-- vincoli logici del sistema
-
-Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare comunque un cattivo accoppiamento.
-"""
-        )
 
     matchmaking_order = [
         "max_weight_diff_default",
@@ -112,43 +87,32 @@ Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare
             )
 
             st.caption(
-                """
-**Significato dei parametri logici**
-- `use_rating_default`: decide se includere la differenza rating nel mismatch
-- `avoid_rematches_default`: decide se penalizzare gli atleti che si sono già affrontati
-- `same_sex_only_default`: decide se consentire solo accoppiamenti tra atleti dello stesso sesso
-"""
+                "La componente `level_factor` pesa la differenza tra i livelli assegnati. "
+                "Il livello suggerito resta solo un supporto all'operatore. "
+                "`use_rating_default` include la differenza rating nel mismatch."
             )
 
-            col1, col2, col3 = st.columns(3)
-            save_clicked = col1.form_submit_button("Salva parametri matchmaking")
-            save_and_recalc_clicked = col2.form_submit_button("Salva e ricalcola mismatch")
-            reset_clicked = col3.form_submit_button("Ripristina default matchmaking")
+            col1, col2 = st.columns(2)
+            save_and_apply_clicked = col1.form_submit_button(
+                "Salva e aggiorna mismatch"
+            )
+            reset_clicked = col2.form_submit_button("Ripristina default matchmaking")
 
-    if save_clicked:
-        save_group_parameters("matchmaking", matchmaking_inputs)
+    if save_and_apply_clicked:
+        save_formula_group_draft("matchmaking", matchmaking_inputs)
         set_flash_message(
             "success",
-            "Parametri matchmaking salvati correttamente.",
-            target="matchmaking",
-        )
-        st.rerun()
-
-    if save_and_recalc_clicked:
-        save_group_parameters("matchmaking", matchmaking_inputs)
-        set_flash_message(
-            "success",
-            "Parametri matchmaking salvati e mismatch aggiornato.",
+            "Parametri matchmaking applicati. Mismatch e anteprima aggiornati.",
             target="matchmaking",
         )
         st.rerun()
 
     if reset_clicked:
-        reset_group_to_defaults("matchmaking")
+        reset_formula_group_draft("matchmaking")
         queue_group_reset("matchmaking", "matchmaking")
         set_flash_message(
             "warning",
-            "Parametri matchmaking ripristinati ai valori di default.",
+            "Parametri matchmaking della bozza ripristinati ai valori di default.",
             target="matchmaking",
         )
         st.rerun()
@@ -201,6 +165,7 @@ Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare
 
     athlete_by_id = {athlete.id: athlete for athlete in athletes}
     selected_athletes = [athlete_by_id[athlete_a_id], athlete_by_id[athlete_b_id]]
+    rating_by_athlete_id = build_current_rating_map()
 
     max_weight_diff = get_widget_value(
         "matchmaking",
@@ -249,6 +214,8 @@ Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare
         use_rating=use_rating,
         avoid_rematches=avoid_rematches,
         same_sex_only=same_sex_only,
+        rating_by_athlete_id=rating_by_athlete_id,
+        all_matches=matches,
     )
 
     if not preview_pairs:
@@ -270,9 +237,11 @@ Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare
                 "Atleta": athlete_a_name,
                 "Stile": athlete_a.style,
                 "Sesso": athlete_a.sex,
-                "Età": calculate_age(athlete_a.birth_date, date.today()),
+                "Eta": calculate_age(athlete_a.birth_date, date.today()),
                 "Peso": float(athlete_a.default_weight),
-                "Level": int(athlete_a.level),
+                "Level assegnato": row["assigned_level_a"],
+                "Level suggerito": row["suggested_level_a"],
+                "Match validi": row["valid_match_count_a"],
                 "Rating": row["rating_a"],
                 "Team": athlete_a.team or "",
             },
@@ -280,9 +249,11 @@ Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare
                 "Atleta": athlete_b_name,
                 "Stile": athlete_b.style,
                 "Sesso": athlete_b.sex,
-                "Età": calculate_age(athlete_b.birth_date, date.today()),
+                "Eta": calculate_age(athlete_b.birth_date, date.today()),
                 "Peso": float(athlete_b.default_weight),
-                "Level": int(athlete_b.level),
+                "Level assegnato": row["assigned_level_b"],
+                "Level suggerito": row["suggested_level_b"],
+                "Match validi": row["valid_match_count_b"],
                 "Rating": row["rating_b"],
                 "Team": athlete_b.team or "",
             },
@@ -293,8 +264,8 @@ Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare
     st.table(athlete_info_df)
 
     st.caption(
-        "La probabilità Elo sotto indica chi è favorito. "
-        "L'indice mismatch invece misura quanto la coppia è adatta nel complesso."
+        "La probabilita Elo sotto indica chi e favorito. "
+        "L'indice mismatch misura invece quanto la coppia e adatta nel complesso."
     )
 
     render_win_probability_metrics(
@@ -311,36 +282,38 @@ Per questo due atleti possono avere probabilità Elo vicine al 50/50, ma restare
             {
                 "Componente": "Differenza peso",
                 "Valore base": f"{row['weight_diff']} kg",
-                "Parametro": f"× {matchmaking_config['weight_factor']}",
+                "Parametro": f"x {matchmaking_config['weight_factor']}",
                 "Contributo": row["weight_component"],
             },
             {
                 "Componente": "Differenza level",
                 "Valore base": row["level_diff"],
-                "Parametro": f"× {matchmaking_config['level_factor']}",
+                "Parametro": f"x {matchmaking_config['level_factor']}",
                 "Contributo": row["level_component"],
             },
             {
                 "Componente": "Differenza rating",
                 "Valore base": row["rating_diff"],
                 "Parametro": (
-                    f"÷ {matchmaking_config['rating_divisor']}"
-                    if use_rating else "Disattivato"
+                    f"/ {matchmaking_config['rating_divisor']}"
+                    if use_rating
+                    else "Disattivato"
                 ),
                 "Contributo": row["rating_component"],
             },
             {
-                "Componente": "Differenza età",
+                "Componente": "Differenza eta",
                 "Valore base": row["age_diff"],
-                "Parametro": f"× {matchmaking_config['age_factor']}",
+                "Parametro": f"x {matchmaking_config['age_factor']}",
                 "Contributo": row["age_component"],
             },
             {
                 "Componente": "Rematch penalty",
                 "Valore base": row["previous_matches"],
                 "Parametro": (
-                    f"× {matchmaking_config['rematch_penalty']}"
-                    if avoid_rematches else "Disattivato"
+                    f"x {matchmaking_config['rematch_penalty']}"
+                    if avoid_rematches
+                    else "Disattivato"
                 ),
                 "Contributo": row["rematch_penalty"],
             },

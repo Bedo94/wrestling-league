@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Optional
+from typing import Optional, TypedDict
 
 from sqlalchemy import func, select
 
@@ -8,7 +8,15 @@ from src.models import Athlete, Event, Match
 from src.reference_data import WIN_TYPE_OPTIONS
 from src.scoring import MatchPointsPreview, calculate_match_points
 from src.settings import TOKEN_SETTINGS
-from src.athletes import get_token_reset_scope
+from src.token_usage import (
+    get_token_spender_id_from_used_by,
+    get_token_used_by_from_spender_id,
+)
+
+
+class DerivedMatchPoints(TypedDict):
+    points_a: float
+    points_b: float
 
 def _validate_match_inputs(
     athlete_a_id: int,
@@ -39,23 +47,24 @@ def _validate_match_inputs(
 def _normalize_token_fields(
     athlete_a_id: int,
     athlete_b_id: int,
-    is_token_match: bool,
     token_spender_id: Optional[int],
-    token_cost: int,
-) -> tuple[bool, Optional[int], int]:
-    if not is_token_match:
-        return False, None, 0
+) -> Optional[int]:
+    token_used_by = get_token_used_by_from_spender_id(
+        athlete_a_id=athlete_a_id,
+        athlete_b_id=athlete_b_id,
+        token_spender_id=token_spender_id,
+    )
+    if token_used_by is None:
+        return None
 
-    if token_spender_id is None:
-        raise ValueError("Devi indicare quale atleta spende il token.")
+    normalized_token_spender_id = get_token_spender_id_from_used_by(
+        athlete_a_id=athlete_a_id,
+        athlete_b_id=athlete_b_id,
+        token_used_by=token_used_by,
+    )
+    assert normalized_token_spender_id is not None
 
-    if token_spender_id not in {athlete_a_id, athlete_b_id}:
-        raise ValueError("L'atleta che spende il token deve essere uno dei due partecipanti.")
-
-    if token_cost <= 0:
-        raise ValueError("Il costo token deve essere maggiore di zero.")
-
-    return True, token_spender_id, token_cost
+    return normalized_token_spender_id
 
 
 def _get_tokens_used_in_event(
@@ -64,33 +73,9 @@ def _get_tokens_used_in_event(
     event_id: int,
     exclude_match_id: Optional[int] = None,
 ) -> int:
-    stmt = select(func.coalesce(func.sum(Match.token_cost), 0)).where(
-        Match.is_token_match.is_(True),
+    stmt = select(func.count(Match.id)).where(
         Match.token_spender_id == athlete_id,
         Match.event_id == event_id,
-    )
-
-    if exclude_match_id is not None:
-        stmt = stmt.where(Match.id != exclude_match_id)
-
-    total = session.execute(stmt).scalar_one()
-    return int(total or 0)
-
-
-def _get_tokens_used_in_season(
-    session,
-    athlete_id: int,
-    season: str,
-    exclude_match_id: Optional[int] = None,
-) -> int:
-    stmt = (
-        select(func.coalesce(func.sum(Match.token_cost), 0))
-        .join(Event, Match.event_id == Event.id)
-        .where(
-            Match.is_token_match.is_(True),
-            Match.token_spender_id == athlete_id,
-            Event.season == season,
-        )
     )
 
     if exclude_match_id is not None:
@@ -105,61 +90,41 @@ def _validate_token_usage(
     athlete_a_id: int,
     athlete_b_id: int,
     *,
-    season: Optional[str],
     event_id: Optional[int],
-    is_token_match: bool,
     token_spender_id: Optional[int],
-    token_cost: int,
     exclude_match_id: Optional[int] = None,
-) -> tuple[bool, Optional[int], int]:
-    is_token_match, token_spender_id, token_cost = _normalize_token_fields(
+) -> Optional[int]:
+    token_spender_id = _normalize_token_fields(
         athlete_a_id=athlete_a_id,
         athlete_b_id=athlete_b_id,
-        is_token_match=is_token_match,
         token_spender_id=token_spender_id,
-        token_cost=token_cost,
     )
 
-    if not is_token_match:
-        return False, None, 0
+    if token_spender_id is None:
+        return None
 
     token_spender = session.get(Athlete, token_spender_id)
     if token_spender is None:
         raise ValueError("Atleta che spende il token non trovato.")
 
     assert token_spender_id is not None
-    scope = get_token_reset_scope()
+    if event_id is None:
+        raise ValueError("event_id obbligatorio per validare i token.")
 
-    if scope == "event":
-        if event_id is None:
-            raise ValueError("event_id obbligatorio per validare i token con reset_scope='event'.")
+    used_tokens = _get_tokens_used_in_event(
+        session=session,
+        athlete_id=token_spender_id,
+        event_id=event_id,
+        exclude_match_id=exclude_match_id,
+    )
 
-        used_tokens = _get_tokens_used_in_event(
-            session=session,
-            athlete_id=token_spender_id,
-            event_id=event_id,
-            exclude_match_id=exclude_match_id,
-        )
-        scope_label = "questo evento"
-    else:
-        if season is None:
-            raise ValueError("season obbligatoria per validare i token con reset_scope='season'.")
-
-        used_tokens = _get_tokens_used_in_season(
-            session=session,
-            athlete_id=token_spender_id,
-            season=season,
-            exclude_match_id=exclude_match_id,
-        )
-        scope_label = f"la stagione {season}"
-
-    remaining_tokens = int(token_spender.token_budget) - used_tokens
-    if remaining_tokens < token_cost:
+    remaining_tokens = int(TOKEN_SETTINGS["default_token_budget_per_event"]) - used_tokens
+    if remaining_tokens < 1:
         raise ValueError(
-            f"{token_spender.first_name} non ha abbastanza token disponibili per {scope_label}."
+            f"{token_spender.first_name} non ha abbastanza token disponibili per questo evento."
         )
     
-    return True, token_spender_id, token_cost
+    return token_spender_id
 
 
 def _require_sync_id(entity, entity_label: str) -> str:
@@ -240,11 +205,7 @@ def _build_match(
     raw_score_b: float,
     winner_id: Optional[int],
     win_type: str,
-    points_a: float,
-    points_b: float,
-    is_token_match: bool,
     token_spender_id: Optional[int],
-    token_cost: int,
     notes: Optional[str] = None,
 ) -> Match:
     return Match(
@@ -260,11 +221,7 @@ def _build_match(
         raw_score_b=raw_score_b,
         winner_id=winner_id,
         win_type=win_type,
-        points_a=points_a,
-        points_b=points_b,
-        is_token_match=is_token_match,
         token_spender_id=token_spender_id,
-        token_cost=token_cost,
         notes=(notes or "").strip() or None,
     )
 
@@ -284,11 +241,7 @@ def _apply_match_fields(
     raw_score_b: float,
     winner_id: Optional[int],
     win_type: str,
-    points_a: float,
-    points_b: float,
-    is_token_match: bool,
     token_spender_id: Optional[int],
-    token_cost: int,
     notes: Optional[str],
 ) -> None:
     match.event_id = event_id
@@ -303,11 +256,7 @@ def _apply_match_fields(
     match.raw_score_b = raw_score_b
     match.winner_id = winner_id
     match.win_type = win_type
-    match.points_a = points_a
-    match.points_b = points_b
-    match.is_token_match = is_token_match
     match.token_spender_id = token_spender_id
-    match.token_cost = token_cost
     match.notes = (notes or "").strip() or None
 
 
@@ -354,6 +303,80 @@ def _calculate_score_data(
     )
 
 
+def derive_match_points(
+    *,
+    match: Match,
+    event: Event,
+    athlete_a: Athlete,
+    athlete_b: Athlete,
+) -> DerivedMatchPoints:
+    if match.winner_id is None or match.win_type is None:
+        raise ValueError("Il match non ha ancora un vincitore o un tipo di vittoria valido.")
+
+    score_data = _calculate_score_data(
+        athlete_a_id=match.athlete_a_id,
+        athlete_b_id=match.athlete_b_id,
+        winner_id=match.winner_id,
+        win_type=match.win_type,
+        weight_a=float(match.weight_a),
+        weight_b=float(match.weight_b),
+        raw_score_a=float(match.raw_score_a),
+        raw_score_b=float(match.raw_score_b),
+        athlete_a_sex=athlete_a.sex,
+        athlete_b_sex=athlete_b.sex,
+        athlete_a_birth_date=athlete_a.birth_date,
+        athlete_b_birth_date=athlete_b.birth_date,
+        event_date=event.event_date,
+    )
+    return {
+        "points_a": float(score_data["total_points_a"]),
+        "points_b": float(score_data["total_points_b"]),
+    }
+
+
+def _fallback_derived_match_points(match: Match) -> DerivedMatchPoints:
+    return {
+        "points_a": 0.0,
+        "points_b": 0.0,
+    }
+
+
+def build_match_points_map() -> dict[int, DerivedMatchPoints]:
+    """
+    Calcola i punti classifica dei match senza scrivere nel DB.
+
+    Per record incompleti o non ricalcolabili mantiene un fallback
+    neutro a zero, così il read-side resta stabile durante la transizione.
+    """
+    session = get_session()
+    try:
+        matches = list(session.scalars(select(Match).order_by(Match.id.asc())).all())
+        points_by_match_id: dict[int, DerivedMatchPoints] = {}
+
+        for match in matches:
+            event = session.get(Event, match.event_id)
+            athlete_a = session.get(Athlete, match.athlete_a_id)
+            athlete_b = session.get(Athlete, match.athlete_b_id)
+
+            if event is None or athlete_a is None or athlete_b is None:
+                points_by_match_id[match.id] = _fallback_derived_match_points(match)
+                continue
+
+            try:
+                points_by_match_id[match.id] = derive_match_points(
+                    match=match,
+                    event=event,
+                    athlete_a=athlete_a,
+                    athlete_b=athlete_b,
+                )
+            except ValueError:
+                points_by_match_id[match.id] = _fallback_derived_match_points(match)
+
+        return points_by_match_id
+    finally:
+        session.close()
+
+
 def create_match(
     event_id: int,
     athlete_a_id: int,
@@ -372,12 +395,10 @@ def create_match(
     event_date: date,
     winner_id: Optional[int],
     win_type: str,
-    is_token_match: bool = False,
     token_spender_id: Optional[int] = None,
-    token_cost: int = TOKEN_SETTINGS["default_token_cost"],
     notes: Optional[str] = None,
 ) -> Match:
-    score_data = _calculate_score_data(
+    _calculate_score_data(
         athlete_a_id=athlete_a_id,
         athlete_b_id=athlete_b_id,
         winner_id=winner_id,
@@ -399,15 +420,12 @@ def create_match(
         if event is None:
             raise ValueError(f"Evento con ID {event_id} non trovato.")
 
-        is_token_match, token_spender_id, token_cost = _validate_token_usage(
+        token_spender_id = _validate_token_usage(
             session=session,
             athlete_a_id=athlete_a_id,
             athlete_b_id=athlete_b_id,
-            season=event.season,
             event_id=event.id,
-            is_token_match=is_token_match,
             token_spender_id=token_spender_id,
-            token_cost=token_cost,
         )
 
         event, athlete_a, athlete_b, winner, token_spender = _load_match_entities(
@@ -432,11 +450,7 @@ def create_match(
             raw_score_b=raw_score_b,
             winner_id=winner_id,
             win_type=win_type,
-            points_a=score_data["total_points_a"],
-            points_b=score_data["total_points_b"],
-            is_token_match=is_token_match,
             token_spender_id=token_spender_id,
-            token_cost=token_cost,
             notes=notes,
         )
 
@@ -477,12 +491,10 @@ def replace_match(
     event_date: date,
     winner_id: Optional[int],
     win_type: str,
-    is_token_match: bool = False,
     token_spender_id: Optional[int] = None,
-    token_cost: int = TOKEN_SETTINGS["default_token_cost"],
     notes: Optional[str] = None,
 ) -> Match:
-    score_data = _calculate_score_data(
+    _calculate_score_data(
         athlete_a_id=athlete_a_id,
         athlete_b_id=athlete_b_id,
         winner_id=winner_id,
@@ -509,15 +521,12 @@ def replace_match(
             if event is None:
                 raise ValueError(f"Evento con ID {event_id} non trovato.")
 
-            is_token_match, token_spender_id, token_cost = _validate_token_usage(
+            token_spender_id = _validate_token_usage(
                 session=session,
                 athlete_a_id=athlete_a_id,
                 athlete_b_id=athlete_b_id,
-                season=event.season,
                 event_id=event.id,
-                is_token_match=is_token_match,
                 token_spender_id=token_spender_id,
-                token_cost=token_cost,
                 exclude_match_id=match_id,
             )
 
@@ -544,11 +553,7 @@ def replace_match(
                 raw_score_b=raw_score_b,
                 winner_id=winner_id,
                 win_type=win_type,
-                points_a=score_data["total_points_a"],
-                points_b=score_data["total_points_b"],
-                is_token_match=is_token_match,
                 token_spender_id=token_spender_id,
-                token_cost=token_cost,
                 notes=notes,
             )
 
@@ -592,7 +597,7 @@ def list_matches() -> list[Match]:
 
 def recompute_all_match_scores() -> int:
     session = get_session()
-    updated_count = 0
+    processed_count = 0
 
     try:
         matches = list(session.scalars(select(Match).order_by(Match.id.asc())).all())
@@ -609,20 +614,11 @@ def recompute_all_match_scores() -> int:
                 continue
 
             try:
-                score_data = _calculate_score_data(
-                    athlete_a_id=match.athlete_a_id,
-                    athlete_b_id=match.athlete_b_id,
-                    winner_id=match.winner_id,
-                    win_type=match.win_type,
-                    weight_a=float(match.weight_a),
-                    weight_b=float(match.weight_b),
-                    raw_score_a=float(match.raw_score_a),
-                    raw_score_b=float(match.raw_score_b),
-                    athlete_a_sex=athlete_a.sex,
-                    athlete_b_sex=athlete_b.sex,
-                    athlete_a_birth_date=athlete_a.birth_date,
-                    athlete_b_birth_date=athlete_b.birth_date,
-                    event_date=event.event_date,
+                derive_match_points(
+                    match=match,
+                    event=event,
+                    athlete_a=athlete_a,
+                    athlete_b=athlete_b,
                 )
             except ValueError as exc:
                 athlete_a_name = f"{athlete_a.first_name} {athlete_a.last_name or ''}".strip()
@@ -632,22 +628,10 @@ def recompute_all_match_scores() -> int:
                     f"({athlete_a_name} vs {athlete_b_name}): {exc}"
                 ) from exc
 
-            new_points_a = score_data["total_points_a"]
-            new_points_b = score_data["total_points_b"]
+            processed_count += 1
 
-            if (
-                float(match.points_a or 0.0) != new_points_a
-                or float(match.points_b or 0.0) != new_points_b
-            ):
-                updated_count += 1
-
-            match.points_a = new_points_a
-            match.points_b = new_points_b
-
-        session.commit()
-        return updated_count
+        return processed_count
     except Exception:
-        session.rollback()
         raise
     finally:
         session.close()

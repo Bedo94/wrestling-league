@@ -4,14 +4,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import create_engine, select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.database import normalize_sqlite_path
+from src.database import Base, build_postgres_connect_args, normalize_sqlite_path
 from src.db_runtime import (
     DB_MODE_POSTGRES,
     DB_MODE_SQLITE,
     can_sync_between_environments,
 )
+from src.init_db import ensure_engine_sync_metadata_triggers
 from src.models import Athlete, Event, Match
 
 
@@ -92,6 +94,9 @@ def _build_session_factory(
 
     if mode == DB_MODE_SQLITE:
         engine_kwargs["connect_args"] = {"check_same_thread": False}
+    else:
+        engine_kwargs["pool_pre_ping"] = True
+        engine_kwargs["connect_args"] = build_postgres_connect_args()
 
     engine = create_engine(database_url, **engine_kwargs)
 
@@ -101,6 +106,10 @@ def _build_session_factory(
         autocommit=False,
         future=True,
     )
+
+
+def _ensure_sync_schema(engine: Engine) -> None:
+    Base.metadata.create_all(bind=engine)
 
 
 def _empty_summary() -> dict[str, int]:
@@ -130,6 +139,27 @@ def _is_source_newer(
         return int(source_version_id or 0) > int(target_version_id or 0)
 
     return False
+
+
+def _get_conflict_reason(
+    *,
+    source_updated_at: datetime | None,
+    target_updated_at: datetime | None,
+    source_version_id: int | None,
+    target_version_id: int | None,
+) -> str:
+    source_dt = _normalize_dt(source_updated_at)
+    target_dt = _normalize_dt(target_updated_at)
+    source_version = int(source_version_id or 0)
+    target_version = int(target_version_id or 0)
+
+    if target_dt > source_dt:
+        return "target_newer_than_source"
+
+    if source_dt == target_dt and target_version > source_version:
+        return "target_newer_than_source"
+
+    return "same_metadata_but_different_content"
 
 
 def _records_differ(existing: Any, payload: dict[str, Any], fields: list[str]) -> bool:
@@ -173,14 +203,35 @@ def _build_athlete_insert_payload(source: Athlete) -> dict[str, Any]:
         "style": source.style,
         "level": source.level,
         "default_weight": source.default_weight,
-        "rating": source.rating,
         "active": source.active,
-        "token_budget": source.token_budget,
         "sync_id": source.sync_id,
         "created_at": source.created_at,
         "updated_at": source.updated_at,
         "version_id": source.version_id,
     }
+
+
+def _athlete_label(athlete: Athlete | None) -> str:
+    if athlete is None:
+        return ""
+    return f"{athlete.first_name} {athlete.last_name or ''}".strip()
+
+
+def _event_label(event: Event | None) -> str:
+    if event is None:
+        return ""
+    return f"{event.name} ({event.event_date})"
+
+
+def _match_label(
+    match: Match,
+    athletes_by_id: dict[int, Athlete],
+    events_by_id: dict[int, Event],
+) -> str:
+    athlete_a = _athlete_label(athletes_by_id.get(match.athlete_a_id)) or f"A#{match.athlete_a_id}"
+    athlete_b = _athlete_label(athletes_by_id.get(match.athlete_b_id)) or f"B#{match.athlete_b_id}"
+    event_text = _event_label(events_by_id.get(match.event_id)) or f"Evento #{match.event_id}"
+    return f"{athlete_a} vs {athlete_b} @ {event_text}"
 
 
 def _copy_athlete_fields(source: Athlete, target: Athlete) -> None:
@@ -193,16 +244,13 @@ def _copy_athlete_fields(source: Athlete, target: Athlete) -> None:
     target.style = source.style
     target.level = source.level
     target.default_weight = source.default_weight
-    target.rating = source.rating
     target.active = source.active
-    target.token_budget = source.token_budget
 
 
 def _build_event_insert_payload(source: Event) -> dict[str, Any]:
     return {
         "name": source.name,
         "event_date": source.event_date,
-        "season": source.season,
         "notes": source.notes,
         "sync_id": source.sync_id,
         "created_at": source.created_at,
@@ -214,7 +262,6 @@ def _build_event_insert_payload(source: Event) -> dict[str, Any]:
 def _copy_event_fields(source: Event, target: Event) -> None:
     target.name = source.name
     target.event_date = source.event_date
-    target.season = source.season
     target.notes = source.notes
 
 
@@ -245,9 +292,7 @@ def _sync_athletes(
         "style",
         "level",
         "default_weight",
-        "rating",
         "active",
-        "token_budget",
     ]
 
     for source_row in source_rows:
@@ -279,20 +324,31 @@ def _sync_athletes(
             continue
 
         if _records_differ(existing, payload, compare_fields):
-            conflict = _make_conflict(
-                table_name="athletes",
-                sync_id=source_row.sync_id,
-                reason="target_newer_than_source",
+            source_name = _athlete_label(source_row)
+            target_name = _athlete_label(existing)
+            conflict_reason = _get_conflict_reason(
                 source_updated_at=source_row.updated_at,
                 target_updated_at=existing.updated_at,
                 source_version_id=source_row.version_id,
                 target_version_id=existing.version_id,
-                details=f"name={source_row.first_name}",
+            )
+            conflict = _make_conflict(
+                table_name="athletes",
+                sync_id=source_row.sync_id,
+                reason=conflict_reason,
+                source_updated_at=source_row.updated_at,
+                target_updated_at=existing.updated_at,
+                source_version_id=source_row.version_id,
+                target_version_id=existing.version_id,
+                details=(
+                    f"Sorgente: {source_name or source_row.sync_id} | "
+                    f"Target: {target_name or existing.sync_id}"
+                ),
             )
             conflicts.append(conflict)
             summary["conflicts"] += 1
             log_lines.append(
-                f"[athletes] CONFLICT sync_id={source_row.sync_id} reason=target_newer_than_source"
+                f"[athletes] CONFLICT sync_id={source_row.sync_id} reason={conflict_reason}"
             )
         else:
             summary["skipped"] += 1
@@ -323,7 +379,6 @@ def _sync_events(
     compare_fields = [
         "name",
         "event_date",
-        "season",
         "notes",
     ]
 
@@ -356,20 +411,31 @@ def _sync_events(
             continue
 
         if _records_differ(existing, payload, compare_fields):
-            conflict = _make_conflict(
-                table_name="events",
-                sync_id=source_row.sync_id,
-                reason="target_newer_than_source",
+            source_name = _event_label(source_row)
+            target_name = _event_label(existing)
+            conflict_reason = _get_conflict_reason(
                 source_updated_at=source_row.updated_at,
                 target_updated_at=existing.updated_at,
                 source_version_id=source_row.version_id,
                 target_version_id=existing.version_id,
-                details=f"name={source_row.name}",
+            )
+            conflict = _make_conflict(
+                table_name="events",
+                sync_id=source_row.sync_id,
+                reason=conflict_reason,
+                source_updated_at=source_row.updated_at,
+                target_updated_at=existing.updated_at,
+                source_version_id=source_row.version_id,
+                target_version_id=existing.version_id,
+                details=(
+                    f"Sorgente: {source_name or source_row.sync_id} | "
+                    f"Target: {target_name or existing.sync_id}"
+                ),
             )
             conflicts.append(conflict)
             summary["conflicts"] += 1
             log_lines.append(
-                f"[events] CONFLICT sync_id={source_row.sync_id} reason=target_newer_than_source"
+                f"[events] CONFLICT sync_id={source_row.sync_id} reason={conflict_reason}"
             )
         else:
             summary["skipped"] += 1
@@ -444,11 +510,7 @@ def _resolve_match_payload(
         "raw_score_b": source_match.raw_score_b,
         "winner_id": target_winner_id,
         "win_type": source_match.win_type,
-        "points_a": source_match.points_a,
-        "points_b": source_match.points_b,
-        "is_token_match": source_match.is_token_match,
         "token_spender_id": target_token_spender_id,
-        "token_cost": source_match.token_cost,
         "notes": source_match.notes,
         "event_sync_id": event_sync_id,
         "athlete_a_sync_id": athlete_a_sync_id,
@@ -477,11 +539,7 @@ def _copy_match_fields(payload: dict[str, Any], target: Match) -> None:
     target.raw_score_b = payload["raw_score_b"]
     target.winner_id = payload["winner_id"]
     target.win_type = payload["win_type"]
-    target.points_a = payload["points_a"]
-    target.points_b = payload["points_b"]
-    target.is_token_match = payload["is_token_match"]
     target.token_spender_id = payload["token_spender_id"]
-    target.token_cost = payload["token_cost"]
     target.notes = payload["notes"]
     target.event_sync_id = payload["event_sync_id"]
     target.athlete_a_sync_id = payload["athlete_a_sync_id"]
@@ -509,6 +567,8 @@ def _sync_matches(
     source_event_sync_by_id = {row.id: row.sync_id for row in source_events}
     target_athlete_id_by_sync = {row.sync_id: row.id for row in target_athletes}
     target_event_id_by_sync = {row.sync_id: row.id for row in target_events}
+    source_athletes_by_id = {row.id: row for row in source_athletes}
+    source_events_by_id = {row.id: row for row in source_events}
 
     stmt = select(Match).order_by(Match.id.asc())
     if changed_since is not None:
@@ -530,11 +590,7 @@ def _sync_matches(
         "raw_score_b",
         "winner_id",
         "win_type",
-        "points_a",
-        "points_b",
-        "is_token_match",
         "token_spender_id",
-        "token_cost",
         "notes",
         "event_sync_id",
         "athlete_a_sync_id",
@@ -553,6 +609,11 @@ def _sync_matches(
         )
 
         if payload is None:
+            match_text = _match_label(
+                source_row,
+                source_athletes_by_id,
+                source_events_by_id,
+            )
             conflict = _make_conflict(
                 table_name="matches",
                 sync_id=source_row.sync_id,
@@ -561,7 +622,10 @@ def _sync_matches(
                 target_updated_at=None,
                 source_version_id=source_row.version_id,
                 target_version_id=None,
-                details="Impossibile risolvere le foreign key nel target.",
+                details=(
+                    f"{match_text} | "
+                    "Impossibile risolvere le foreign key nel target."
+                ),
             )
             conflicts.append(conflict)
             summary["conflicts"] += 1
@@ -596,20 +660,31 @@ def _sync_matches(
             continue
 
         if _records_differ(existing, payload, compare_fields):
-            conflict = _make_conflict(
-                table_name="matches",
-                sync_id=source_row.sync_id,
-                reason="target_newer_than_source",
+            match_text = _match_label(
+                source_row,
+                source_athletes_by_id,
+                source_events_by_id,
+            )
+            conflict_reason = _get_conflict_reason(
                 source_updated_at=source_row.updated_at,
                 target_updated_at=existing.updated_at,
                 source_version_id=source_row.version_id,
                 target_version_id=existing.version_id,
-                details="Record presente nel target ma più recente del sorgente.",
+            )
+            conflict = _make_conflict(
+                table_name="matches",
+                sync_id=source_row.sync_id,
+                reason=conflict_reason,
+                source_updated_at=source_row.updated_at,
+                target_updated_at=existing.updated_at,
+                source_version_id=source_row.version_id,
+                target_version_id=existing.version_id,
+                details=f"{match_text} | Record presente nel target ma più recente del sorgente.",
             )
             conflicts.append(conflict)
             summary["conflicts"] += 1
             log_lines.append(
-                f"[matches] CONFLICT sync_id={source_row.sync_id} reason=target_newer_than_source"
+                f"[matches] CONFLICT sync_id={source_row.sync_id} reason={conflict_reason}"
             )
         else:
             summary["skipped"] += 1
@@ -731,6 +806,11 @@ def sync_raw_data(
             sqlite_path=target_sqlite_path,
             postgres_url=target_postgres_url,
         )
+
+        _ensure_sync_schema(source_engine)
+        _ensure_sync_schema(target_engine)
+        ensure_engine_sync_metadata_triggers(source_engine)
+        ensure_engine_sync_metadata_triggers(target_engine)
 
         with source_session_factory() as source_session, target_session_factory() as target_session:
             summary["athletes"] = _sync_athletes(

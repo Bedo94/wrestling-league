@@ -10,25 +10,23 @@ from sqlalchemy import select
 from src.admin_formulas_shared import (
     apply_pending_reset,
     format_athlete_preview_label,
+    get_formula_draft_config,
     queue_group_reset,
+    reset_formula_group_draft,
     render_flash_message,
     render_group_inputs,
+    save_formula_group_draft,
     set_flash_message,
 )
 from src.database import get_session
-from src.formula_config_service import (
-    get_full_config,
-    reset_group_to_defaults,
-    save_group_parameters,
-)
 from src.matches import recompute_all_match_scores
 from src.models import Athlete
-from src.ratings import recompute_ratings
+from src.ratings import build_current_rating_map, recompute_ratings
 from src.scoring import calculate_match_points, get_age_at_event
 
 
 def render_scoring_tab() -> None:
-    config = get_full_config()
+    config = get_formula_draft_config()
     scoring_config: dict[str, Any] = config.get("scoring", {})
 
     apply_pending_reset("scoring", "scoring")
@@ -127,28 +125,19 @@ Negli altri casi vale `1.0`.
         with st.form("scoring_form"):
             scoring_inputs = render_group_inputs(scoring_config, scoring_order, "scoring")
 
-            col1, col2, col3 = st.columns(3)
-            save_clicked = col1.form_submit_button("Salva parametri scoring")
-            save_and_recalc_clicked = col2.form_submit_button("Salva e ricalcola scoring")
-            reset_clicked = col3.form_submit_button("Ripristina default scoring")
+            col1, col2 = st.columns(2)
+            save_and_apply_clicked = col1.form_submit_button("Salva e applica scoring")
+            reset_clicked = col2.form_submit_button("Ripristina default scoring")
 
-    if save_clicked:
-        save_group_parameters("scoring", scoring_inputs)
-        set_flash_message(
-            "success",
-            "Parametri scoring salvati correttamente.",
-            target="scoring",
-        )
-        st.rerun()
-
-    if save_and_recalc_clicked:
-        save_group_parameters("scoring", scoring_inputs)
+    if save_and_apply_clicked:
+        save_formula_group_draft("scoring", scoring_inputs)
         try:
             updated_matches = recompute_all_match_scores()
             recompute_ratings()
             set_flash_message(
                 "success",
-                f"Parametri scoring salvati. Ricalcolati {updated_matches} match e aggiornati anche i rating.",
+                "Parametri scoring applicati. "
+                f"Ricalcolati {updated_matches} match e aggiornati anche i rating.",
                 target="scoring",
             )
         except ValueError as exc:
@@ -160,11 +149,11 @@ Negli altri casi vale `1.0`.
         st.rerun()
 
     if reset_clicked:
-        reset_group_to_defaults("scoring")
+        reset_formula_group_draft("scoring")
         queue_group_reset("scoring", "scoring")
         set_flash_message(
             "warning",
-            "Parametri scoring ripristinati ai valori di default.",
+            "Parametri scoring della bozza ripristinati ai valori di default.",
             target="scoring",
         )
         st.rerun()
@@ -218,6 +207,7 @@ Negli altri casi vale `1.0`.
     athlete_by_id = {a.id: a for a in athletes}
     athlete_a = athlete_by_id[athlete_a_id]
     athlete_b = athlete_by_id[athlete_b_id]
+    rating_by_athlete_id = build_current_rating_map()
 
     st.caption(
         "La data evento serve anche per calcolare l'età degli atleti: "
@@ -291,7 +281,11 @@ Negli altri casi vale `1.0`.
                 "Età evento": get_age_at_event(athlete_a.birth_date, event_date),
                 "Peso usato": float(weight_a),
                 "Level": int(athlete_a.level),
-                "Rating": athlete_a.rating if athlete_a.rating is not None else "N.D.",
+                "Rating": (
+                    rating_by_athlete_id[athlete_a.id]
+                    if athlete_a.id in rating_by_athlete_id
+                    else "N.D."
+                ),
                 "Team": athlete_a.team or "",
             },
             {
@@ -301,7 +295,11 @@ Negli altri casi vale `1.0`.
                 "Età evento": get_age_at_event(athlete_b.birth_date, event_date),
                 "Peso usato": float(weight_b),
                 "Level": int(athlete_b.level),
-                "Rating": athlete_b.rating if athlete_b.rating is not None else "N.D.",
+                "Rating": (
+                    rating_by_athlete_id[athlete_b.id]
+                    if athlete_b.id in rating_by_athlete_id
+                    else "N.D."
+                ),
                 "Team": athlete_b.team or "",
             },
         ]

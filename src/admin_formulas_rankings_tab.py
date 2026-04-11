@@ -8,16 +8,14 @@ import streamlit as st
 
 from src.admin_formulas_shared import (
     apply_pending_reset,
+    get_formula_draft_config,
     get_typed_value,
     get_widget_value,
     queue_group_reset,
+    reset_formula_group_draft,
     render_flash_message,
+    save_formula_group_draft,
     set_flash_message,
-)
-from src.formula_config_service import (
-    get_full_config,
-    reset_group_to_defaults,
-    save_group_parameters,
 )
 from src.rankings import build_rankings
 from src.rankings_page_ui import (
@@ -27,7 +25,7 @@ from src.rankings_page_ui import (
 
 
 def render_athlete_ranking_section() -> None:
-    config = get_full_config()
+    config = get_formula_draft_config()
     athlete_ranking_config: dict[str, Any] = config.get("athlete_ranking", {})
 
     apply_pending_reset("athlete_ranking", "athlete_ranking")
@@ -134,35 +132,29 @@ $$
                 "min_matches_for_average": int(min_matches),
             }
 
-            col1, col2, col3 = st.columns(3)
-            save_clicked = col1.form_submit_button("Salva classifica atleti")
-            save_and_refresh_clicked = col2.form_submit_button("Salva e aggiorna anteprima")
-            reset_clicked = col3.form_submit_button("Ripristina default classifica atleti")
+            col1, col2 = st.columns(2)
+            save_and_apply_clicked = col1.form_submit_button(
+                "Salva e aggiorna classifica atleti"
+            )
+            reset_clicked = col2.form_submit_button(
+                "Ripristina default classifica atleti"
+            )
 
-    if save_clicked:
-        save_group_parameters("athlete_ranking", athlete_inputs)
+    if save_and_apply_clicked:
+        save_formula_group_draft("athlete_ranking", athlete_inputs)
         set_flash_message(
             "success",
-            "Metodo classifica atleti salvato correttamente.",
-            target="athlete_ranking",
-        )
-        st.rerun()
-
-    if save_and_refresh_clicked:
-        save_group_parameters("athlete_ranking", athlete_inputs)
-        set_flash_message(
-            "success",
-            "Metodo classifica atleti salvato e anteprima aggiornata.",
+            "Parametri classifica atleti applicati. Anteprima aggiornata.",
             target="athlete_ranking",
         )
         st.rerun()
 
     if reset_clicked:
-        reset_group_to_defaults("athlete_ranking")
+        reset_formula_group_draft("athlete_ranking")
         queue_group_reset("athlete_ranking", "athlete_ranking")
         set_flash_message(
             "warning",
-            "Metodo classifica atleti ripristinato ai valori di default.",
+            "Metodo classifica atleti della bozza ripristinato ai valori di default.",
             target="athlete_ranking",
         )
         st.rerun()
@@ -203,7 +195,7 @@ $$
 
 
 def render_team_ranking_section() -> None:
-    config = get_full_config()
+    config = get_formula_draft_config()
     team_config: dict[str, Any] = config.get("team_ranking", {})
 
     apply_pending_reset("team_ranking", "team_ranking")
@@ -316,35 +308,27 @@ Nel secondo metodo il bonus partecipazione non entra nel punteggio finale.
                 "participation_bonus_per_athlete": float(participation_bonus),
             }
 
-            col1, col2, col3 = st.columns(3)
-            save_clicked = col1.form_submit_button("Salva classifica team")
-            save_and_refresh_clicked = col2.form_submit_button("Salva e aggiorna anteprima")
-            reset_clicked = col3.form_submit_button("Ripristina default team")
+            col1, col2 = st.columns(2)
+            save_and_apply_clicked = col1.form_submit_button(
+                "Salva e aggiorna classifica team"
+            )
+            reset_clicked = col2.form_submit_button("Ripristina default team")
 
-    if save_clicked:
-        save_group_parameters("team_ranking", team_inputs)
+    if save_and_apply_clicked:
+        save_formula_group_draft("team_ranking", team_inputs)
         set_flash_message(
             "success",
-            "Parametri classifica team salvati correttamente.",
-            target="team_ranking",
-        )
-        st.rerun()
-
-    if save_and_refresh_clicked:
-        save_group_parameters("team_ranking", team_inputs)
-        set_flash_message(
-            "success",
-            "Parametri classifica team salvati e classifica team aggiornata.",
+            "Parametri classifica team applicati. Anteprima aggiornata.",
             target="team_ranking",
         )
         st.rerun()
 
     if reset_clicked:
-        reset_group_to_defaults("team_ranking")
+        reset_formula_group_draft("team_ranking")
         queue_group_reset("team_ranking", "team_ranking")
         set_flash_message(
             "warning",
-            "Parametri classifica team ripristinati ai valori di default.",
+            "Parametri classifica team della bozza ripristinati ai valori di default.",
             target="team_ranking",
         )
         st.rerun()

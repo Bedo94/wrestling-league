@@ -5,8 +5,6 @@ from collections.abc import Sequence
 import pandas as pd
 from st_aggrid import GridOptionsBuilder
 
-from src.events import derive_season_from_date
-
 ACTIVE_LABEL = "Attivo"
 INACTIVE_LABEL = "Inattivo"
 
@@ -128,11 +126,6 @@ def normalize_athletes_grid_df(grid_df: pd.DataFrame) -> pd.DataFrame:
         errors="raise",
     ).astype(float)
 
-    normalized_df["Token budget"] = pd.to_numeric(
-        normalized_df["Token budget"],
-        errors="raise",
-    ).astype(int)
-
     normalized_df["Attivo"] = normalized_df["Attivo"].map(
         {
             ACTIVE_LABEL: True,
@@ -202,12 +195,20 @@ def configure_athletes_grid(
     )
     configure_select_text_filter_column(
         gb,
-        "Livello",
+        "Livello assegnato",
         editable=True,
         options=level_labels,
-        width=98,
-        min_width=94,
-        max_width=104,
+        width=130,
+        min_width=122,
+        max_width=138,
+    )
+    configure_text_column(
+        gb,
+        "Livello suggerito",
+        editable=False,
+        width=126,
+        min_width=118,
+        max_width=134,
     )
     configure_number_column(
         gb,
@@ -216,14 +217,6 @@ def configure_athletes_grid(
         width=76,
         min_width=72,
         max_width=82,
-    )
-    configure_number_column(
-        gb,
-        "Token budget",
-        editable=True,
-        width=98,
-        min_width=94,
-        max_width=104,
     )
     configure_text_column(
         gb,
@@ -263,8 +256,6 @@ def normalize_events_grid_df(grid_df: pd.DataFrame) -> pd.DataFrame:
         errors="raise",
     ).dt.date
 
-    normalized_df["Stagione"] = normalized_df["Data"].apply(derive_season_from_date)
-
     return normalized_df
 
 
@@ -295,14 +286,6 @@ def configure_events_grid(gb: GridOptionsBuilder) -> None:
         width=118,
         min_width=112,
         max_width=124,
-    )
-    configure_text_column(
-        gb,
-        "Stagione",
-        editable=False,
-        width=98,
-        min_width=92,
-        max_width=104,
     )
     configure_text_column(
         gb,
@@ -344,7 +327,6 @@ def configure_matches_grid(gb: GridOptionsBuilder) -> None:
 
     configure_text_column(gb, "Evento", editable=False, flex=1.15, min_width=150)
     configure_text_column(gb, "Data", editable=False, width=118, min_width=112, max_width=124)
-    configure_text_column(gb, "Stagione", editable=False, width=96, min_width=92, max_width=102)
     configure_text_column(gb, "Stile", editable=False, width=90, min_width=86, max_width=96)
 
     configure_text_column(gb, "Atleta A", editable=False, flex=1.0, min_width=140)

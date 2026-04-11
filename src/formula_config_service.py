@@ -1,62 +1,179 @@
-from copy import deepcopy
-from datetime import datetime
+import hashlib
 import json
-from typing import Any, Dict, Optional
+import math
+import re
+import tomllib
+from copy import deepcopy
+from typing import Any, Optional
 
-from altair import value
+import streamlit as st
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from src.database import get_session
-from src.models import CalculationRun, FormulaParameter, FormulaVersion
+from src.models import FormulaRevision
 from src.settings import (
+    ATHLETE_RANKING_SETTINGS,
     LEVEL_EVALUATION_SETTINGS,
     MATCHMAKING_SETTINGS,
     RATINGS_SETTINGS,
     SCORING_SETTINGS,
     TEAM_RANKING_SETTINGS,
-    ATHLETE_RANKING_SETTINGS,
 )
 from src.settings_defaults import (
+    ATHLETE_RANKING_SETTINGS_DEFAULTS,
     LEVEL_EVALUATION_SETTINGS_DEFAULTS,
     MATCHMAKING_SETTINGS_DEFAULTS,
     RATINGS_SETTINGS_DEFAULTS,
     SCORING_SETTINGS_DEFAULTS,
     TEAM_RANKING_SETTINGS_DEFAULTS,
-    ATHLETE_RANKING_SETTINGS_DEFAULTS,
 )
 
+DEFAULT_FORMULA_ENVIRONMENT = "league_local"
+FORMULA_ENVIRONMENT_SESSION_KEY = "db_environment"
 
-def parse_value(raw_value: str, value_type: str | None = None) -> Any:
-    """
-    Parse a raw string value from the database into the appropriate Python type.
-
-    Supported types are: 'float', 'int', 'bool', 'str'.
-    Defaults to float if no type is provided.
-    """
-    t = (value_type or "float").lower()
-    if t == "bool":
-        return raw_value.lower() in {"1", "true", "yes", "y"}
-    if t == "int":
-        return int(raw_value)
-    if t == "str":
-        return raw_value
-    return float(raw_value)
+_TOML_BARE_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_NUMERIC_STRING_PATTERN = re.compile(r"^-?\d+$")
 
 
-def _replace_live_group(target: dict[str, Any], defaults: dict[str, Any]) -> None:
-    target.clear()
-    target.update(deepcopy(defaults))
+def _resolve_environment_name(environment_name: str | None = None) -> str:
+    if environment_name is not None and str(environment_name).strip():
+        return str(environment_name).strip()
+
+    try:
+        session_environment = st.session_state.get(FORMULA_ENVIRONMENT_SESSION_KEY)
+    except Exception:
+        session_environment = None
+
+    if session_environment is not None and str(session_environment).strip():
+        return str(session_environment).strip()
+
+    return DEFAULT_FORMULA_ENVIRONMENT
+
+
+def _normalize_config_value(group: str, key: str, value: Any) -> Any:
+    if group == "ratings" and key == "level_start_ratings" and isinstance(value, dict):
+        normalized: dict[Any, Any] = {}
+        for raw_key, raw_item in value.items():
+            normalized_key: Any = raw_key
+            if isinstance(raw_key, str) and _NUMERIC_STRING_PATTERN.fullmatch(raw_key):
+                normalized_key = int(raw_key)
+            normalized[normalized_key] = raw_item
+        return normalized
+    return value
+
+
+def _normalize_full_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(config)
+    for group, params in normalized.items():
+        if not isinstance(params, dict):
+            continue
+        for key, value in list(params.items()):
+            params[key] = _normalize_config_value(group, key, value)
+    return normalized
+
+
+def _format_toml_key(key: Any) -> str:
+    key_text = str(key)
+    if _TOML_BARE_KEY_PATTERN.fullmatch(key_text):
+        return key_text
+    return json.dumps(key_text, ensure_ascii=False)
+
+
+def _format_toml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("I valori float non finiti non sono supportati nel TOML.")
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    raise ValueError(f"Tipo non supportato per serializzazione TOML: {type(value)!r}")
+
+
+def _iter_toml_sections(
+    config: dict[str, Any],
+    prefix: tuple[Any, ...] = (),
+):
+    scalar_items: list[tuple[Any, Any]] = []
+    nested_items: list[tuple[Any, dict[str, Any]]] = []
+
+    for key, value in config.items():
+        if isinstance(value, dict):
+            nested_items.append((key, value))
+        else:
+            scalar_items.append((key, value))
+
+    yield prefix, scalar_items
+
+    for key, nested_value in nested_items:
+        yield from _iter_toml_sections(nested_value, (*prefix, key))
+
+
+def _overlay_config(
+    target: dict[str, dict[str, Any]],
+    overrides: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    for group, params in overrides.items():
+        if not isinstance(params, dict):
+            continue
+        target_group = target.setdefault(group, {})
+        for key, value in params.items():
+            if key not in target_group:
+                continue
+            target_group[key] = _normalize_config_value(group, key, value)
+    return target
 
 
 def _reset_live_settings_to_defaults() -> None:
-    _replace_live_group(SCORING_SETTINGS, SCORING_SETTINGS_DEFAULTS)
-    _replace_live_group(MATCHMAKING_SETTINGS, MATCHMAKING_SETTINGS_DEFAULTS)
-    _replace_live_group(RATINGS_SETTINGS, RATINGS_SETTINGS_DEFAULTS)
-    _replace_live_group(TEAM_RANKING_SETTINGS, TEAM_RANKING_SETTINGS_DEFAULTS)
-    _replace_live_group(LEVEL_EVALUATION_SETTINGS, LEVEL_EVALUATION_SETTINGS_DEFAULTS)
+    SCORING_SETTINGS.clear()
+    SCORING_SETTINGS.update(deepcopy(SCORING_SETTINGS_DEFAULTS))
+
+    MATCHMAKING_SETTINGS.clear()
+    MATCHMAKING_SETTINGS.update(deepcopy(MATCHMAKING_SETTINGS_DEFAULTS))
+
+    RATINGS_SETTINGS.clear()
+    RATINGS_SETTINGS.update(deepcopy(RATINGS_SETTINGS_DEFAULTS))
+
+    TEAM_RANKING_SETTINGS.clear()
+    TEAM_RANKING_SETTINGS.update(deepcopy(TEAM_RANKING_SETTINGS_DEFAULTS))
+
+    LEVEL_EVALUATION_SETTINGS.clear()
+    LEVEL_EVALUATION_SETTINGS.update(deepcopy(LEVEL_EVALUATION_SETTINGS_DEFAULTS))
+
+    ATHLETE_RANKING_SETTINGS.clear()
+    ATHLETE_RANKING_SETTINGS.update(deepcopy(ATHLETE_RANKING_SETTINGS_DEFAULTS))
 
 
-def get_all_defaults() -> Dict[str, Dict[str, Any]]:
+def _apply_config_to_live_settings(config: dict[str, dict[str, Any]]) -> None:
+    normalized_config = _merge_config_with_defaults(config)
+    _reset_live_settings_to_defaults()
+
+    SCORING_SETTINGS.update(deepcopy(normalized_config.get("scoring", {})))
+    MATCHMAKING_SETTINGS.update(deepcopy(normalized_config.get("matchmaking", {})))
+    RATINGS_SETTINGS.update(deepcopy(normalized_config.get("ratings", {})))
+    TEAM_RANKING_SETTINGS.update(deepcopy(normalized_config.get("team_ranking", {})))
+    LEVEL_EVALUATION_SETTINGS.update(
+        deepcopy(normalized_config.get("level_evaluation", {}))
+    )
+    ATHLETE_RANKING_SETTINGS.update(
+        deepcopy(normalized_config.get("athlete_ranking", {}))
+    )
+
+
+def _merge_config_with_defaults(
+    config: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    merged = get_all_defaults()
+    if config is None:
+        return merged
+    return _overlay_config(merged, _normalize_full_config(config))
+
+
+def get_all_defaults() -> dict[str, dict[str, Any]]:
     return {
         "scoring": deepcopy(SCORING_SETTINGS_DEFAULTS),
         "matchmaking": deepcopy(MATCHMAKING_SETTINGS_DEFAULTS),
@@ -67,342 +184,330 @@ def get_all_defaults() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def load_config() -> None:
-    """
-    Reset live settings to pristine defaults, then override them with values
-    stored in FormulaParameter.
-    """
-    _reset_live_settings_to_defaults()
-
-    session = get_session()
-    try:
-        params = session.scalars(select(FormulaParameter)).all()
-        for param in params:
-            value = parse_value(param.value, param.value_type)
-            group = param.group_name
-            key = param.key
-
-            if group == "scoring" and key in SCORING_SETTINGS:
-                SCORING_SETTINGS[key] = value
-            elif group == "matchmaking" and key in MATCHMAKING_SETTINGS:
-                MATCHMAKING_SETTINGS[key] = value
-            elif group == "ratings" and key in RATINGS_SETTINGS:
-                RATINGS_SETTINGS[key] = value
-            elif group == "team_ranking" and key in TEAM_RANKING_SETTINGS:
-                TEAM_RANKING_SETTINGS[key] = value
-            elif group == "level_evaluation" and key in LEVEL_EVALUATION_SETTINGS:
-                LEVEL_EVALUATION_SETTINGS[key] = value
-            elif group == "athlete_ranking" and key in ATHLETE_RANKING_SETTINGS:
-                ATHLETE_RANKING_SETTINGS[key] = value
-    finally:
-        session.close()
+def load_config(environment_name: str | None = None) -> None:
+    resolved_environment_name = _resolve_environment_name(environment_name)
+    config = get_full_config(environment_name=resolved_environment_name)
+    _apply_config_to_live_settings(config)
 
 
-def get_parameter(group: str, key: str) -> Any:
-    """
-    Return the current value for a parameter, falling back to its default.
-    """
-    defaults = get_all_defaults()
-    session = get_session()
-    try:
-        param: FormulaParameter | None = session.scalar(
-            select(FormulaParameter).where(
-                FormulaParameter.group_name == group,
-                FormulaParameter.key == key,
-            )
-        )
-        if param:
-            return parse_value(param.value, param.value_type)
-        return defaults.get(group, {}).get(key)
-    finally:
-        session.close()
-
-
-def get_full_config() -> Dict[str, Dict[str, Any]]:
-    """
-    Return the complete configuration, merging defaults with any custom values.
-    """
-    config = get_all_defaults()
-    session = get_session()
-    try:
-        params = session.scalars(select(FormulaParameter)).all()
-        for param in params:
-            value = parse_value(param.value, param.value_type)
-            group = param.group_name
-            key = param.key
-            section = config.setdefault(group, {})
-            section[key] = value
-        return config
-    finally:
-        session.close()
-
-
-def save_parameters(values: Dict[str, Dict[str, Any]]) -> None:
-    """
-    Persist a set of configuration values to the database.
-    """
-    session = get_session()
-    try:
-        for group, params in values.items():
-            for key, value in params.items():
-                if isinstance(value, bool):
-                    value_type = "bool"
-                elif isinstance(value, int) and not isinstance(value, bool):
-                    value_type = "int"
-                elif isinstance(value, float):
-                    value_type = "float"
-                else:
-                    value_type = "str"
-
-                value_str = str(value)
-
-                existing: FormulaParameter | None = session.scalar(
-                    select(FormulaParameter).where(
-                        FormulaParameter.group_name == group,
-                        FormulaParameter.key == key,
-                    )
-                )
-
-                if existing:
-                    existing.value = value_str
-                    existing.value_type = value_type
-                else:
-                    session.add(
-                        FormulaParameter(
-                            group_name=group,
-                            key=key,
-                            value=value_str,
-                            value_type=value_type,
-                        )
-                    )
-
-        session.commit()
-    finally:
-        session.close()
-
-    load_config()
-
-
-def reset_to_defaults() -> None:
-    """
-    Clear all custom configuration values from the database and revert to defaults.
-    """
-    session = get_session()
-    try:
-        session.query(FormulaParameter).delete()
-        session.commit()
-    finally:
-        session.close()
-
-    load_config()
+def get_parameter(
+    group: str,
+    key: str,
+    *,
+    environment_name: str | None = None,
+) -> Any:
+    config = get_full_config(environment_name=environment_name)
+    return config.get(group, {}).get(key)
 
 
 def get_group_defaults(group: str) -> dict[str, Any]:
     return deepcopy(get_all_defaults().get(group, {}))
 
 
-def save_group_parameters(group: str, values: dict[str, Any]) -> None:
-    save_parameters({group: values})
+def get_full_config(
+    environment_name: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    resolved_environment_name = _resolve_environment_name(environment_name)
+    active_revision = get_active_formula_revision(resolved_environment_name)
+
+    if active_revision is None:
+        return get_all_defaults()
+
+    config = deserialize_full_config_text(
+        active_revision.config_text,
+        config_format=active_revision.config_format,
+    )
+    return _merge_config_with_defaults(config)
 
 
-def reset_group_to_defaults(group: str) -> None:
-    session = get_session()
-    try:
-        session.query(FormulaParameter).filter(
-            FormulaParameter.group_name == group
-        ).delete()
-        session.commit()
-    finally:
-        session.close()
-
-    load_config()
+def get_current_group_config(
+    group: str,
+    *,
+    environment_name: str | None = None,
+) -> dict[str, Any]:
+    return deepcopy(get_full_config(environment_name=environment_name).get(group, {}))
 
 
-# -------------------------------------------------------------------
-# Formula versioning helpers
-# -------------------------------------------------------------------
+def build_formula_config_preview_rows(config: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
 
-def _serialize_config(config: dict[str, Any]) -> str:
-    return json.dumps(config, ensure_ascii=False, sort_keys=True)
+    for group, params in config.items():
+        if not isinstance(params, dict):
+            continue
+
+        for key, value in params.items():
+            if isinstance(value, dict):
+                for nested_key, nested_value in sorted(value.items(), key=lambda item: str(item[0])):
+                    rows.append(
+                        {
+                            "Gruppo": str(group),
+                            "Parametro": f"{key}.{nested_key}",
+                            "Valore": str(nested_value),
+                        }
+                    )
+            else:
+                rows.append(
+                    {
+                        "Gruppo": str(group),
+                        "Parametro": str(key),
+                        "Valore": str(value),
+                    }
+                )
+
+    return rows
 
 
-def _deserialize_config(raw_value: str) -> dict[str, Any]:
-    data = json.loads(raw_value)
+def serialize_full_config_to_toml(config: dict[str, Any]) -> str:
+    normalized_config = _normalize_full_config(config)
+    lines: list[str] = []
+
+    for section_path, scalar_items in _iter_toml_sections(normalized_config):
+        if section_path:
+            if lines:
+                lines.append("")
+            lines.append(
+                f"[{'.'.join(_format_toml_key(path_item) for path_item in section_path)}]"
+            )
+
+        for key, value in scalar_items:
+            lines.append(f"{_format_toml_key(key)} = {_format_toml_scalar(value)}")
+
+    if not lines:
+        return ""
+
+    return "\n".join(lines) + "\n"
+
+
+def deserialize_full_config_text(
+    raw_value: str,
+    *,
+    config_format: str = "toml",
+) -> dict[str, Any]:
+    normalized_format = (config_format or "toml").strip().lower()
+    if normalized_format == "json":
+        data = json.loads(raw_value)
+    elif normalized_format == "toml":
+        data = tomllib.loads(raw_value)
+    else:
+        raise ValueError(f"Formato config non supportato: {config_format}")
+
     if isinstance(data, dict):
-        return data
-    raise ValueError("config_json non contiene un oggetto JSON valido.")
+        return _normalize_full_config(data)
+    raise ValueError("config_text non contiene un oggetto di configurazione valido.")
 
 
-def get_current_group_config(group: str) -> dict[str, Any]:
-    return deepcopy(get_full_config().get(group, {}))
+def _calculate_config_hash(config_text: str) -> str:
+    return hashlib.sha256(config_text.encode("utf-8")).hexdigest()
 
 
-def get_next_formula_version_number(group: str) -> int:
+def get_current_config_text(environment_name: str | None = None) -> str:
+    return serialize_full_config_to_toml(get_full_config(environment_name=environment_name))
+
+
+def get_next_formula_revision_number(environment_name: str) -> int:
+    resolved_environment_name = _resolve_environment_name(environment_name)
     session = get_session()
     try:
-        latest = session.scalar(
-            select(FormulaVersion)
-            .where(FormulaVersion.group_name == group)
-            .order_by(FormulaVersion.version_number.desc())
-        )
+        try:
+            latest = session.scalar(
+                select(FormulaRevision)
+                .where(FormulaRevision.environment_name == resolved_environment_name)
+                .order_by(FormulaRevision.revision_number.desc())
+            )
+        except (OperationalError, ProgrammingError):
+            return 1
         if latest is None:
             return 1
-        return int(latest.version_number) + 1
+        return int(latest.revision_number) + 1
     finally:
         session.close()
 
 
-def list_formula_versions(
-    group: Optional[str] = None,
-    status: Optional[str] = None,
-) -> list[FormulaVersion]:
+def list_formula_revisions(
+    environment_name: Optional[str] = None,
+    only_active: Optional[bool] = None,
+) -> list[FormulaRevision]:
+    resolved_environment_name = (
+        _resolve_environment_name(environment_name)
+        if environment_name is not None
+        else None
+    )
+
     session = get_session()
     try:
-        stmt = select(FormulaVersion)
+        stmt = select(FormulaRevision)
 
-        if group:
-            stmt = stmt.where(FormulaVersion.group_name == group)
+        if resolved_environment_name:
+            stmt = stmt.where(
+                FormulaRevision.environment_name == resolved_environment_name
+            )
 
-        if status:
-            stmt = stmt.where(FormulaVersion.status == status)
+        if only_active is not None:
+            stmt = stmt.where(FormulaRevision.is_active.is_(only_active))
 
         stmt = stmt.order_by(
-            FormulaVersion.group_name.asc(),
-            FormulaVersion.version_number.desc(),
+            FormulaRevision.environment_name.asc(),
+            FormulaRevision.revision_number.desc(),
         )
 
-        return list(session.scalars(stmt).all())
+        try:
+            return list(session.scalars(stmt).all())
+        except (OperationalError, ProgrammingError):
+            return []
     finally:
         session.close()
 
 
-def get_formula_version_by_id(formula_version_id: int) -> Optional[FormulaVersion]:
+def get_formula_revision_by_id(formula_revision_id: int) -> Optional[FormulaRevision]:
     session = get_session()
     try:
-        return session.get(FormulaVersion, formula_version_id)
+        try:
+            return session.get(FormulaRevision, formula_revision_id)
+        except (OperationalError, ProgrammingError):
+            return None
     finally:
         session.close()
 
 
-def get_formula_version_config(formula_version_id: int) -> dict[str, Any]:
+def get_formula_revision_config(formula_revision_id: int) -> dict[str, Any]:
     session = get_session()
     try:
-        formula_version = session.get(FormulaVersion, formula_version_id)
-        if formula_version is None:
-            raise ValueError(f"FormulaVersion non trovata: id={formula_version_id}")
-        return _deserialize_config(formula_version.config_json)
-    finally:
-        session.close()
-
-
-def get_latest_published_formula_version(group: str) -> Optional[FormulaVersion]:
-    session = get_session()
-    try:
-        return session.scalar(
-            select(FormulaVersion)
-            .where(
-                FormulaVersion.group_name == group,
-                FormulaVersion.status == "published",
+        try:
+            formula_revision = session.get(FormulaRevision, formula_revision_id)
+        except (OperationalError, ProgrammingError) as exc:
+            raise ValueError("La tabella formula_revisions non è ancora disponibile.") from exc
+        if formula_revision is None:
+            raise ValueError(f"FormulaRevision non trovata: id={formula_revision_id}")
+        return _merge_config_with_defaults(
+            deserialize_full_config_text(
+                formula_revision.config_text,
+                config_format=formula_revision.config_format,
             )
-            .order_by(FormulaVersion.version_number.desc())
         )
     finally:
         session.close()
 
 
-def create_formula_version(
-    *,
-    group: str,
-    config: Optional[dict[str, Any]] = None,
-    label: Optional[str] = None,
-    publish: bool = False,
-) -> FormulaVersion:
-    """
-    Create a new version of a formula group using either the provided config
-    or the current live config loaded from FormulaParameter.
-    """
+def get_active_formula_revision(environment_name: str | None = None) -> Optional[FormulaRevision]:
+    resolved_environment_name = _resolve_environment_name(environment_name)
     session = get_session()
     try:
-        version_number = get_next_formula_version_number(group)
-        effective_config = config if config is not None else get_current_group_config(group)
+        try:
+            return session.scalar(
+                select(FormulaRevision)
+                .where(
+                    FormulaRevision.environment_name == resolved_environment_name,
+                    FormulaRevision.is_active.is_(True),
+                )
+                .order_by(FormulaRevision.revision_number.desc())
+            )
+        except (OperationalError, ProgrammingError):
+            return None
+    finally:
+        session.close()
 
-        if publish:
-            published_versions = session.scalars(
-                select(FormulaVersion).where(
-                    FormulaVersion.group_name == group,
-                    FormulaVersion.status == "published",
+
+def apply_full_config(config: dict[str, dict[str, Any]]) -> None:
+    _apply_config_to_live_settings(config)
+
+
+def create_formula_revision(
+    *,
+    environment_name: str,
+    config: Optional[dict[str, dict[str, Any]]] = None,
+    label: Optional[str] = None,
+    note: Optional[str] = None,
+    source_revision_id: Optional[int] = None,
+    created_by: Optional[str] = None,
+    activate: bool = False,
+) -> FormulaRevision:
+    resolved_environment_name = _resolve_environment_name(environment_name)
+    created_revision: FormulaRevision | None = None
+
+    session = get_session()
+    try:
+        revision_number = get_next_formula_revision_number(resolved_environment_name)
+        current_active_revision = session.scalar(
+            select(FormulaRevision).where(
+                FormulaRevision.environment_name == resolved_environment_name,
+                FormulaRevision.is_active.is_(True),
+            )
+        )
+        effective_config = _merge_config_with_defaults(
+            config
+            if config is not None
+            else get_full_config(environment_name=resolved_environment_name)
+        )
+        config_text = serialize_full_config_to_toml(effective_config)
+        effective_source_revision_id = source_revision_id
+
+        if effective_source_revision_id is None and current_active_revision is not None:
+            effective_source_revision_id = current_active_revision.id
+
+        if activate:
+            active_revisions = session.scalars(
+                select(FormulaRevision).where(
+                    FormulaRevision.environment_name == resolved_environment_name,
+                    FormulaRevision.is_active.is_(True),
                 )
             ).all()
-            for existing in published_versions:
-                existing.status = "archived"
+            for existing in active_revisions:
+                existing.is_active = False
 
-        formula_version = FormulaVersion(
-            group_name=group,
-            version_number=version_number,
-            label=label or f"{group} v{version_number}",
-            config_json=_serialize_config(effective_config),
-            status="published" if publish else "draft",
-            published_at=datetime.utcnow() if publish else None,
+        formula_revision = FormulaRevision(
+            environment_name=resolved_environment_name,
+            revision_number=revision_number,
+            is_active=activate,
+            label=label or f"{resolved_environment_name} rev {revision_number}",
+            note=note,
+            source_revision_id=effective_source_revision_id,
+            config_format="toml",
+            config_text=config_text,
+            config_hash=_calculate_config_hash(config_text),
+            created_by=created_by,
         )
 
-        session.add(formula_version)
+        session.add(formula_revision)
         session.commit()
-        session.refresh(formula_version)
-        return formula_version
+        session.refresh(formula_revision)
+        created_revision = formula_revision
     finally:
         session.close()
 
+    if activate:
+        load_config(environment_name=resolved_environment_name)
 
-# -------------------------------------------------------------------
-# Calculation run helpers
-# -------------------------------------------------------------------
+    if created_revision is None:
+        raise RuntimeError("Impossibile creare la FormulaRevision.")
 
-def start_calculation_run(
-    *,
-    formula_version_id: int,
-    environment_name: str,
-    scope_type: str = "all",
-    scope_reference: Optional[str] = None,
-    started_by: Optional[str] = None,
-    notes: Optional[str] = None,
-) -> CalculationRun:
+    return created_revision
+
+
+def activate_formula_revision(formula_revision_id: int) -> None:
+    environment_name: str | None = None
+
     session = get_session()
     try:
-        calculation_run = CalculationRun(
-            formula_version_id=formula_version_id,
-            environment_name=environment_name,
-            scope_type=scope_type,
-            scope_reference=scope_reference,
-            status="running",
-            started_by=started_by,
-            notes=notes,
-        )
-        session.add(calculation_run)
-        session.commit()
-        session.refresh(calculation_run)
-        return calculation_run
-    finally:
-        session.close()
+        formula_revision = session.get(FormulaRevision, formula_revision_id)
+        if formula_revision is None:
+            raise ValueError(f"FormulaRevision non trovata: id={formula_revision_id}")
 
+        environment_name = formula_revision.environment_name
 
-def finish_calculation_run(
-    run_id: int,
-    *,
-    status: str = "completed",
-    notes: Optional[str] = None,
-) -> None:
-    session = get_session()
-    try:
-        calculation_run = session.get(CalculationRun, run_id)
-        if calculation_run is None:
-            raise ValueError(f"CalculationRun non trovata: id={run_id}")
+        active_revisions = session.scalars(
+            select(FormulaRevision).where(
+                FormulaRevision.environment_name == environment_name,
+                FormulaRevision.is_active.is_(True),
+                FormulaRevision.id != formula_revision.id,
+            )
+        ).all()
+        for existing in active_revisions:
+            existing.is_active = False
 
-        calculation_run.status = status
-        calculation_run.finished_at = datetime.utcnow()
-
-        if notes is not None:
-            calculation_run.notes = notes
-
+        formula_revision.is_active = True
         session.commit()
     finally:
         session.close()
+
+    if environment_name is not None:
+        load_config(environment_name=environment_name)

@@ -5,6 +5,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+from src.athlete_level_service import build_athlete_level_profile_map
 from src.athletes import list_athletes
 from src.db_runtime import bootstrap_database_from_state
 from src.events import list_events
@@ -16,6 +17,7 @@ from src.pairing import (
     generate_candidate_pairs,
     select_greedy_pairings,
 )
+from src.ratings import build_current_rating_map, get_default_start_rating
 from src.table_component import render_table_component
 from src.table_specs import (
     build_candidate_pairings_table_spec,
@@ -24,14 +26,30 @@ from src.table_specs import (
 )
 
 
-def athlete_label(athlete, reference_date: date) -> str:
+def athlete_label(
+    athlete,
+    reference_date: date,
+    rating_by_athlete_id: dict[int, float] | None = None,
+    level_by_athlete_id: dict[int, int] | None = None,
+) -> str:
     full_name = f"{athlete.first_name} {athlete.last_name or ''}".strip()
     age = calculate_age(athlete.birth_date, reference_date)
-    rating_value = athlete.rating if athlete.rating is not None else "N.D."
+    rating_value = (
+        rating_by_athlete_id.get(athlete.id)
+        if rating_by_athlete_id is not None
+        else get_default_start_rating()
+    )
+    if rating_value is None:
+        rating_value = "N.D."
+    display_level = (
+        int(level_by_athlete_id[athlete.id])
+        if level_by_athlete_id is not None and athlete.id in level_by_athlete_id
+        else int(athlete.level)
+    )
     return (
         f"{full_name} — {athlete.style} — {athlete.sex} — "
         f"{athlete.default_weight:.1f} kg — "
-        f"{get_level_label(athlete.level)} — "
+        f"{get_level_label(display_level)} — "
         f"{age} anni — rating {rating_value}"
     )
 
@@ -114,8 +132,8 @@ def _build_candidate_pairings_dataframe(candidates: list[dict]) -> pd.DataFrame:
                 "Stile": pair["style"],
                 "Peso A": float(athlete_a.default_weight),
                 "Peso B": float(athlete_b.default_weight),
-                "Level A": get_level_label(athlete_a.level),
-                "Level B": get_level_label(athlete_b.level),
+                "Level A": get_level_label(pair["assigned_level_a"]),
+                "Level B": get_level_label(pair["assigned_level_b"]),
                 "Rating A": pair["rating_a"],
                 "Rating B": pair["rating_b"],
                 "Età A": pair["age_a"],
@@ -169,17 +187,31 @@ def _build_candidate_pairings_dataframe(candidates: list[dict]) -> pd.DataFrame:
     ].copy()
 
 
-def _build_leftovers_dataframe(leftovers, reference_date: date) -> pd.DataFrame:
+def _build_leftovers_dataframe(
+    leftovers,
+    reference_date: date,
+    rating_by_athlete_id: dict[int, float] | None = None,
+    level_by_athlete_id: dict[int, int] | None = None,
+) -> pd.DataFrame:
     leftover_rows = []
     for athlete in leftovers:
+        rating_value = (
+            rating_by_athlete_id.get(athlete.id)
+            if rating_by_athlete_id is not None
+            else get_default_start_rating()
+        )
         leftover_rows.append(
             {
                 "Atleta": f"{athlete.first_name} {athlete.last_name or ''}".strip(),
                 "Sesso": athlete.sex,
                 "Stile": athlete.style,
                 "Peso": float(athlete.default_weight),
-                "Level": get_level_label(athlete.level),
-                "Rating": athlete.rating if athlete.rating is not None else "N.D.",
+                "Level": get_level_label(
+                    int(level_by_athlete_id[athlete.id])
+                    if level_by_athlete_id is not None and athlete.id in level_by_athlete_id
+                    else int(athlete.level)
+                ),
+                "Rating": rating_value if rating_value is not None else "N.D.",
                 "Età": calculate_age(athlete.birth_date, reference_date),
             }
         )
@@ -196,6 +228,16 @@ def render_pairing_page() -> None:
     events = list_events()
     all_athletes = list_athletes(include_inactive=False)
     all_matches = list_matches()
+    rating_by_athlete_id = build_current_rating_map()
+    level_profiles_by_athlete_id = build_athlete_level_profile_map(
+        athletes=all_athletes,
+        matches=all_matches,
+        rating_by_athlete_id=rating_by_athlete_id,
+    )
+    assigned_level_by_athlete_id = {
+        athlete_id: int(profile["assigned_level"])
+        for athlete_id, profile in level_profiles_by_athlete_id.items()
+    }
 
     if not events:
         st.warning("Prima devi creare almeno un evento.")
@@ -318,7 +360,12 @@ def render_pairing_page() -> None:
 
             sex_options = sorted({athlete.sex for athlete in style_athletes})
             level_options = sorted(
-                {get_level_label(athlete.level) for athlete in style_athletes}
+                {
+                    get_level_label(
+                        level_profiles_by_athlete_id[athlete.id]["assigned_level"]
+                    )
+                    for athlete in style_athletes
+                }
             )
 
             profile_col1, profile_col2 = st.columns(2)
@@ -341,7 +388,10 @@ def render_pairing_page() -> None:
                 athlete
                 for athlete in style_athletes
                 if athlete.sex in selected_sexes
-                and get_level_label(athlete.level) in selected_levels
+                and get_level_label(
+                    level_profiles_by_athlete_id[athlete.id]["assigned_level"]
+                )
+                in selected_levels
             ]
 
             if len(filtered_pool) < 2:
@@ -460,7 +510,12 @@ def render_pairing_page() -> None:
         "Escludi atleti dal pool",
         options=filtered_pool,
         default=[],
-        format_func=lambda athlete: athlete_label(athlete, reference_date),
+        format_func=lambda athlete: athlete_label(
+            athlete,
+            reference_date,
+            rating_by_athlete_id=rating_by_athlete_id,
+            level_by_athlete_id=assigned_level_by_athlete_id,
+        ),
         placeholder="Cerca e seleziona gli atleti da escludere",
     )
 
@@ -487,6 +542,8 @@ def render_pairing_page() -> None:
         avoid_rematches=avoid_rematches,
         same_sex_only=same_sex_only,
         exclude_same_team=exclude_same_team,
+        rating_by_athlete_id=rating_by_athlete_id,
+        all_matches=all_matches,
     )
 
     if not candidates:
@@ -544,6 +601,8 @@ def render_pairing_page() -> None:
             leftovers_df = _build_leftovers_dataframe(
                 leftovers=leftovers,
                 reference_date=reference_date,
+                rating_by_athlete_id=rating_by_athlete_id,
+                level_by_athlete_id=assigned_level_by_athlete_id,
             )
             leftovers_spec = build_pairing_leftovers_table_spec(
                 display_df=leftovers_df

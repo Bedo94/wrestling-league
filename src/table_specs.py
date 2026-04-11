@@ -81,19 +81,19 @@ ATHLETES_TABLE_SPEC = TableSpec(
     name="athletes",
     csv_filename="atleti.csv",
     caption=(
-        "Filtra direttamente dalla riga sotto le intestazioni. "
+        "Filtra e seleziona una o più righe dalla tabella. "
         "Puoi modificare le righe visibili senza perdere quelle nascoste dai filtri."
     ),
     prepare_for_view=prepare_athletes_grid_df,
     normalize_from_view=normalize_athletes_grid_df,
     configure_aggrid=_configure_athletes_aggrid,
     editable=True,
-    enable_selection=False,
-    selection_mode="single",
+    enable_selection=True,
+    selection_mode="multiple",
     enable_column_visibility=True,
     always_visible_columns=["Nome"],
     hidden_columns=["::auto_unique_id::"],
-    hidden_by_default_columns=["ID", "#"],
+    hidden_by_default_columns=["ID", "#", "Livello suggerito"],
     default_visible_columns=None,
     show_row_index=True,
     row_index_column_name="#",
@@ -110,15 +110,15 @@ EVENTS_TABLE_SPEC = TableSpec(
     name="events",
     csv_filename="eventi.csv",
     caption=(
-        "Filtra direttamente dalla riga sotto le intestazioni. "
-        "La stagione viene aggiornata automaticamente in base alla data."
+        "Filtra e seleziona una o più righe dalla tabella. "
+        "Puoi modificare le righe visibili senza perdere quelle nascoste dai filtri."
     ),
     prepare_for_view=prepare_events_grid_df,
     normalize_from_view=normalize_events_grid_df,
     configure_aggrid=_configure_events_aggrid,
     editable=True,
-    enable_selection=False,
-    selection_mode="single",
+    enable_selection=True,
+    selection_mode="multiple",
     enable_column_visibility=True,
     always_visible_columns=["Nome"],
     hidden_columns=["::auto_unique_id::"],

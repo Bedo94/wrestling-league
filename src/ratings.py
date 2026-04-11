@@ -5,6 +5,7 @@ from typing import Literal, TypedDict
 from sqlalchemy import select
 
 from src.database import get_session
+from src.matches import build_match_points_map
 from src.models import Athlete, Event, Match
 from src.settings import RATINGS_SETTINGS
 
@@ -30,11 +31,8 @@ class RatingPreviewResult(TypedDict):
     new_rating_b: float
 
 
-def get_start_rating(level: int) -> float:
-    start_ratings = RATINGS_SETTINGS["level_start_ratings"]
-    default_rating = float(RATINGS_SETTINGS["default_start_rating"])
-    return float(start_ratings.get(level, default_rating))
-
+def get_default_start_rating() -> float:
+    return float(RATINGS_SETTINGS["default_start_rating"])
 
 def get_k_factor() -> float:
     return float(RATINGS_SETTINGS["k_factor"])
@@ -85,8 +83,8 @@ def _get_winner_side_from_match(match: Match) -> str | None:
 
 def get_actual_scores(match: Match) -> tuple[float, float]:
     return get_actual_scores_from_values(
-        points_a=match.points_a,
-        points_b=match.points_b,
+        points_a=0.0,
+        points_b=0.0,
         winner_side=_get_winner_side_from_match(match),
     )
 
@@ -197,56 +195,75 @@ def preview_rating_update(
     }
 
 
-def recompute_ratings() -> Mapping[int, float]:
+def _load_rating_replay_rows(session) -> list[tuple[Match, date]]:
+    stmt = (
+        select(Match, Event.event_date)
+        .join(Event, Match.event_id == Event.id)
+        .order_by(Event.event_date.asc(), Match.id.asc())
+    )
+    return list(session.execute(stmt).all())
+
+
+def _build_rating_map_from_rows(
+    athletes: list[Athlete],
+    rows: list[tuple[Match, date]],
+    match_points_by_id: Mapping[int, dict[str, float]] | None = None,
+) -> dict[int, float]:
+    default_rating = get_default_start_rating()
+    current_ratings: dict[int, float] = {
+        athlete.id: default_rating
+        for athlete in athletes
+    }
+
+    for match, _event_date in rows:
+        athlete_a_id = match.athlete_a_id
+        athlete_b_id = match.athlete_b_id
+        match_points = (
+            match_points_by_id.get(match.id)
+            if match_points_by_id is not None
+            else None
+        )
+
+        preview = preview_rating_update(
+            rating_a=current_ratings[athlete_a_id],
+            rating_b=current_ratings[athlete_b_id],
+            points_a=match_points["points_a"] if match_points is not None else 0.0,
+            points_b=match_points["points_b"] if match_points is not None else 0.0,
+            winner_side=_get_winner_side_from_match(match),
+            win_type=match.win_type,
+            k_factor=get_k_factor(),
+            logistic_divisor=get_logistic_divisor(),
+        )
+
+        current_ratings[athlete_a_id] = preview["new_rating_a"]
+        current_ratings[athlete_b_id] = preview["new_rating_b"]
+
+    return {
+        athlete_id: round(float(rating_value), 2)
+        for athlete_id, rating_value in current_ratings.items()
+    }
+
+
+def build_current_rating_map() -> dict[int, float]:
+    """
+    Calcola i rating correnti a partire dai match registrati senza scrivere nel DB.
+    """
     session = get_session()
     try:
         athletes = list(session.scalars(select(Athlete).order_by(Athlete.id)).all())
-
-        default_rating = float(RATINGS_SETTINGS["default_start_rating"])
-
-        current_ratings: dict[int, float] = {
-            athlete.id: get_start_rating(athlete.level)
-            for athlete in athletes
-        }
-
-        stmt = (
-            select(Match, Event.event_date)
-            .join(Event, Match.event_id == Event.id)
-            .order_by(Event.event_date.asc(), Match.id.asc())
+        rows = _load_rating_replay_rows(session)
+        match_points_by_id = build_match_points_map()
+        return _build_rating_map_from_rows(
+            athletes,
+            rows,
+            match_points_by_id=match_points_by_id,
         )
-
-        rows = session.execute(stmt).all()
-
-        for match, _event_date in rows:
-            athlete_a_id = match.athlete_a_id
-            athlete_b_id = match.athlete_b_id
-
-            rating_a = current_ratings[athlete_a_id]
-            rating_b = current_ratings[athlete_b_id]
-
-            preview = preview_rating_update(
-                rating_a=rating_a,
-                rating_b=rating_b,
-                points_a=match.points_a,
-                points_b=match.points_b,
-                winner_side=_get_winner_side_from_match(match),
-                win_type=match.win_type,
-                k_factor=get_k_factor(),
-                logistic_divisor=get_logistic_divisor(),
-            )
-
-            current_ratings[athlete_a_id] = preview["new_rating_a"]
-            current_ratings[athlete_b_id] = preview["new_rating_b"]
-
-        for athlete in athletes:
-            final_rating = current_ratings.get(athlete.id, default_rating)
-            athlete.rating = round(final_rating, 2)
-
-        session.commit()
-
-        return {athlete.id: float(athlete.rating or default_rating) for athlete in athletes}
     finally:
         session.close()
+
+
+def recompute_ratings() -> Mapping[int, float]:
+    return build_current_rating_map()
 
 
 def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
@@ -256,30 +273,38 @@ def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
     session = get_session()
     try:
         athletes = list(session.scalars(select(Athlete).order_by(Athlete.id)).all())
-        current_ratings: dict[int, float] = {
-            athlete.id: float(athlete.rating or get_start_rating(athlete.level))
-            for athlete in athletes
-        }
-        default_rating = float(RATINGS_SETTINGS["default_start_rating"])
-
-        stmt = (
-            select(Match, Event.event_date)
-            .join(Event, Match.event_id == Event.id)
-            .order_by(Event.event_date.asc(), Match.id.asc())
+        default_rating = get_default_start_rating()
+        rows = _load_rating_replay_rows(session)
+        historical_rows = [
+            (match, event_date)
+            for match, event_date in rows
+            if event_date < start_date
+        ]
+        match_points_by_id = build_match_points_map()
+        current_ratings = _build_rating_map_from_rows(
+            athletes,
+            historical_rows,
+            match_points_by_id=match_points_by_id,
         )
-        rows = session.execute(stmt).all()
 
         for match, event_date in rows:
+            if event_date < start_date:
+                continue
+
             athlete_a_id = match.athlete_a_id
             athlete_b_id = match.athlete_b_id
             rating_a = current_ratings[athlete_a_id]
             rating_b = current_ratings[athlete_b_id]
+            match_points = match_points_by_id.get(
+                match.id,
+                {"points_a": 0.0, "points_b": 0.0},
+            )
 
             preview = preview_rating_update(
                 rating_a=rating_a,
                 rating_b=rating_b,
-                points_a=match.points_a,
-                points_b=match.points_b,
+                points_a=match_points["points_a"],
+                points_b=match_points["points_b"],
                 winner_side=_get_winner_side_from_match(match),
                 win_type=match.win_type,
                 k_factor=get_k_factor(),
@@ -292,17 +317,9 @@ def recompute_ratings_from_date(start_date: date) -> Mapping[int, float]:
             current_ratings[athlete_a_id] = new_rating_a
             current_ratings[athlete_b_id] = new_rating_b
 
-            if event_date >= start_date:
-                match_rating_a = round(new_rating_a, 2)
-                match_rating_b = round(new_rating_b, 2)
-                athlete_a = session.get(Athlete, athlete_a_id)
-                athlete_b = session.get(Athlete, athlete_b_id)
-                if athlete_a:
-                    athlete_a.rating = match_rating_a
-                if athlete_b:
-                    athlete_b.rating = match_rating_b
-
-        session.commit()
-        return {athlete.id: float(athlete.rating or default_rating) for athlete in athletes}
+        return {
+            athlete.id: float(current_ratings.get(athlete.id, default_rating))
+            for athlete in athletes
+        }
     finally:
         session.close()

@@ -9,7 +9,7 @@ import streamlit as st
 from src.db_runtime import bootstrap_database_from_state
 from src.events import (
     create_event,
-    derive_season_from_date,
+    delete_events_if_unused,
     list_events,
     update_events_from_rows,
 )
@@ -18,6 +18,7 @@ from src.table_specs import EVENTS_TABLE_SPEC
 
 EVENTS_UPDATE_SUCCESS_KEY = "events_update_success_message"
 EVENTS_CREATE_SUCCESS_KEY = "events_create_success_message"
+EVENTS_DELETE_CANDIDATE_IDS_KEY = "events_delete_candidate_ids"
 
 
 def _build_events_dataframe() -> pd.DataFrame:
@@ -29,7 +30,6 @@ def _build_events_dataframe() -> pd.DataFrame:
                 "ID": event.id,
                 "Nome": event.name,
                 "Data": event.event_date,
-                "Stagione": event.season,
                 "Note": event.notes or "",
             }
             for event in events
@@ -73,11 +73,9 @@ def _render_event_creation_form() -> None:
         return
 
     try:
-        season = derive_season_from_date(event_date)
         event = create_event(
             name=name,
             event_date=event_date,
-            season=season,
             notes=notes,
         )
     except ValueError as exc:
@@ -101,7 +99,22 @@ def _render_events_table(df: pd.DataFrame) -> None:
         key="events_table",
     )
 
-    if st.button("Salva modifiche eventi", type="primary"):
+    selected_event_ids: list[int] = []
+    if (
+        not table_result.selected_rows_df.empty
+        and "ID" in table_result.selected_rows_df.columns
+    ):
+        selected_event_ids = [
+            int(event_id) for event_id in table_result.selected_rows_df["ID"].tolist()
+        ]
+
+    action_col1, action_col2 = st.columns(2)
+
+    if action_col1.button(
+        "Salva modifiche eventi",
+        type="primary",
+        use_container_width=True,
+    ):
         try:
             edited_df = EVENTS_TABLE_SPEC.normalize_from_view(table_result.edited_df)
 
@@ -119,6 +132,70 @@ def _render_events_table(df: pd.DataFrame) -> None:
             st.error(str(exc))
         except Exception as exc:
             st.error(f"Errore durante il salvataggio: {exc}")
+
+    if action_col2.button(
+        "Richiedi eliminazione selezionati",
+        use_container_width=True,
+        disabled=not selected_event_ids,
+    ):
+        st.session_state[EVENTS_DELETE_CANDIDATE_IDS_KEY] = selected_event_ids
+        st.rerun()
+
+    events = list_events()
+    events_by_id = {event.id: event for event in events}
+    pending_delete_ids = st.session_state.get(EVENTS_DELETE_CANDIDATE_IDS_KEY, [])
+    pending_events = [
+        events_by_id[event_id]
+        for event_id in pending_delete_ids
+        if event_id in events_by_id
+    ]
+
+    if pending_events:
+        if len(pending_events) == 1:
+            st.warning(
+                "Stai per eliminare un evento. L'operazione è consentita solo se non ha incontri associati."
+            )
+        else:
+            st.warning(
+                f"Stai per eliminare {len(pending_events)} eventi. "
+                "L'operazione è consentita solo se nessuno ha incontri associati."
+            )
+
+        for event in pending_events[:10]:
+            st.caption(f"{event.name} - {event.event_date}")
+
+        if len(pending_events) > 10:
+            st.caption(f"... e altri {len(pending_events) - 10} eventi selezionati.")
+
+        confirm_col, cancel_col = st.columns(2)
+
+        if confirm_col.button(
+            "Conferma eliminazione eventi",
+            type="primary",
+            use_container_width=True,
+        ):
+            try:
+                deleted_names = delete_events_if_unused(pending_delete_ids)
+                st.session_state[EVENTS_DELETE_CANDIDATE_IDS_KEY] = []
+                if len(deleted_names) == 1:
+                    st.session_state[EVENTS_UPDATE_SUCCESS_KEY] = (
+                        f"Evento eliminato: {deleted_names[0]}."
+                    )
+                else:
+                    st.session_state[EVENTS_UPDATE_SUCCESS_KEY] = (
+                        f"Eventi eliminati correttamente ({len(deleted_names)})."
+                    )
+                st.rerun()
+            except ValueError as exc:
+                st.session_state[EVENTS_DELETE_CANDIDATE_IDS_KEY] = []
+                st.error(str(exc))
+
+        if cancel_col.button(
+            "Annulla eliminazione eventi",
+            use_container_width=True,
+        ):
+            st.session_state[EVENTS_DELETE_CANDIDATE_IDS_KEY] = []
+            st.rerun()
 
 
 def render_events_page() -> None:

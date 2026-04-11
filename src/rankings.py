@@ -4,7 +4,8 @@ from typing import Any
 from src.athletes import list_athletes
 from src.events import list_events
 from src.levels import get_level_label
-from src.matches import list_matches
+from src.matches import build_match_points_map, list_matches
+from src.ratings import build_current_rating_map
 from src.settings import ATHLETE_RANKING_SETTINGS, TEAM_RANKING_SETTINGS
 
 
@@ -73,6 +74,8 @@ def build_rankings(
 
     athletes = list_athletes(include_inactive=True)
     matches = list_matches()
+    match_points_by_id = build_match_points_map()
+    rating_by_athlete_id = build_current_rating_map()
 
     selected_years = set(years) if years else None
     selected_event_ids = set(event_ids) if event_ids else None
@@ -113,7 +116,7 @@ def build_rankings(
             "level": athlete.level,
             "level_label": get_level_label(athlete.level),
             "default_weight": float(athlete.default_weight),
-            "rating": athlete.rating,
+            "rating": rating_by_athlete_id.get(athlete.id),
             "active": athlete.active,
             "matches": 0,
             "wins": 0,
@@ -131,12 +134,16 @@ def build_rankings(
     for match in matches:
         athlete_a = rankings.get(match.athlete_a_id)
         athlete_b = rankings.get(match.athlete_b_id)
+        match_points = match_points_by_id.get(
+            match.id,
+            {"points_a": 0.0, "points_b": 0.0},
+        )
 
         if athlete_a is None or athlete_b is None:
             continue
 
         athlete_a["matches"] += 1
-        athlete_a["class_points_total"] += float(match.points_a or 0.0)
+        athlete_a["class_points_total"] += float(match_points["points_a"])
         athlete_a["technical_points_for"] += float(match.raw_score_a or 0.0)
         athlete_a["technical_points_against"] += float(match.raw_score_b or 0.0)
 
@@ -146,7 +153,7 @@ def build_rankings(
             athlete_a["losses"] += 1
 
         athlete_b["matches"] += 1
-        athlete_b["class_points_total"] += float(match.points_b or 0.0)
+        athlete_b["class_points_total"] += float(match_points["points_b"])
         athlete_b["technical_points_for"] += float(match.raw_score_b or 0.0)
         athlete_b["technical_points_against"] += float(match.raw_score_a or 0.0)
 

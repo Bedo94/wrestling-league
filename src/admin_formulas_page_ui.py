@@ -7,10 +7,16 @@ from src.admin_formulas_matchmaking_tab import render_matchmaking_tab
 from src.admin_formulas_rankings_tab import render_classification_tab
 from src.admin_formulas_rating_tab import render_rating_tab
 from src.admin_formulas_scoring_tab import render_scoring_tab
+from src.admin_formulas_versions_ui import (
+    render_formula_revision_flash,
+    render_formula_versions_header,
+)
 
 
 def render_admin_formulas_page() -> None:
     st.title("Formule")
+    render_formula_revision_flash()
+    render_formula_versions_header()
 
     tab_rating, tab_matchmaking, tab_scoring, tab_classification, tab_level = st.tabs(
         [
