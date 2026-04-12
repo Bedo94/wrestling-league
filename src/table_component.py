@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 import pandas as pd
 import streamlit as st
-from st_aggrid import GridOptionsBuilder
+from st_aggrid import GridOptionsBuilder, GridUpdateMode
 
 from src.aggrid_ui import create_soft_grid_builder, render_soft_aggrid
 
@@ -511,6 +511,18 @@ def _build_export_df(
     return edited_df[export_columns].copy()
 
 
+def _resolve_aggrid_update_mode(spec: TableSpec) -> GridUpdateMode:
+    update_mode = GridUpdateMode.NO_UPDATE
+
+    if spec.editable:
+        update_mode |= GridUpdateMode.VALUE_CHANGED
+
+    if spec.enable_selection:
+        update_mode |= GridUpdateMode.SELECTION_CHANGED
+
+    return update_mode
+
+
 def render_table_component(
     *,
     df: pd.DataFrame,
@@ -611,6 +623,7 @@ def render_table_component(
             header_height=spec.header_height,
             floating_filters_height=spec.floating_filters_height,
             row_height=spec.row_height,
+            update_mode=_resolve_aggrid_update_mode(spec),
         )
 
         partial_edited_df = pd.DataFrame(grid_response["data"]).copy()

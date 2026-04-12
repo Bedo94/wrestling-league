@@ -5,7 +5,6 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select
 
 from src.admin_formulas_shared import (
     apply_pending_reset,
@@ -21,9 +20,8 @@ from src.admin_formulas_shared import (
     save_formula_group_draft,
     set_flash_message,
 )
-from src.database import get_session
+from src.athletes import list_athletes
 from src.levels import get_level_label
-from src.models import Athlete
 from src.pairing import calculate_age
 from src.ratings import (
     build_current_rating_map,
@@ -221,13 +219,7 @@ dove:
     st.divider()
     st.subheader("Anteprima aggiornamento rating")
 
-    session = get_session()
-    try:
-        athletes: list[Athlete] = list(
-            session.scalars(select(Athlete).where(Athlete.active == True)).all()
-        )
-    finally:
-        session.close()
+    athletes = list_athletes(include_inactive=False)
 
     if len(athletes) < 2:
         st.info("Servono almeno due atleti attivi per mostrare l'anteprima.")

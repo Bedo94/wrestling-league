@@ -1,11 +1,13 @@
 from datetime import date, datetime
+from functools import lru_cache
 from typing import Any, Optional
 
 from sqlalchemy import distinct, func, or_, select
 
-from src.database import get_session
+from src.database import get_database_url, get_session
 from src.levels import get_level_from_label
 from src.models import Athlete, Match
+from src.query_cache import DOMAIN_ATHLETES, bump_cache_version, get_cache_version
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
 from src.settings import TOKEN_SETTINGS
 
@@ -94,23 +96,40 @@ def create_athlete(
         session.add(athlete)
         session.commit()
         session.refresh(athlete)
+        bump_cache_version(DOMAIN_ATHLETES)
         return athlete
     finally:
         session.close()
 
 
-def list_athletes(include_inactive: bool = True) -> list[Athlete]:
+@lru_cache(maxsize=32)
+def _list_athletes_cached(
+    database_url: str,
+    include_inactive: bool,
+    version: int,
+) -> tuple[Athlete, ...]:
     session = get_session()
     try:
         stmt = select(Athlete).order_by(Athlete.last_name, Athlete.first_name)
         if not include_inactive:
             stmt = stmt.where(Athlete.active.is_(True))
-        return list(session.scalars(stmt).all())
+        return tuple(session.scalars(stmt).all())
     finally:
         session.close()
 
 
-def list_teams() -> list[str]:
+def list_athletes(include_inactive: bool = True) -> list[Athlete]:
+    return list(
+        _list_athletes_cached(
+            get_database_url(hide_password=False),
+            include_inactive,
+            get_cache_version(DOMAIN_ATHLETES),
+        )
+    )
+
+
+@lru_cache(maxsize=16)
+def _list_teams_cached(database_url: str, version: int) -> tuple[str, ...]:
     session = get_session()
     try:
         stmt = (
@@ -119,9 +138,18 @@ def list_teams() -> list[str]:
             .order_by(Athlete.team.asc())
         )
         results = session.execute(stmt).scalars().all()
-        return [team for team in results if team and str(team).strip()]
+        return tuple(team for team in results if team and str(team).strip())
     finally:
         session.close()
+
+
+def list_teams() -> list[str]:
+    return list(
+        _list_teams_cached(
+            get_database_url(hide_password=False),
+            get_cache_version(DOMAIN_ATHLETES),
+        )
+    )
 
 
 def get_tokens_remaining(
@@ -197,6 +225,9 @@ def delete_athletes_if_unused(athlete_ids: list[int]) -> list[str]:
                 deleted_names.append(_format_athlete_display_name(athlete))
                 session.delete(athlete)
 
+        if deleted_names:
+            bump_cache_version(DOMAIN_ATHLETES)
+
         return deleted_names
     finally:
         session.close()
@@ -254,6 +285,9 @@ def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:
                 athlete.active = bool(row.get("Attivo", True))
 
                 updated_count += 1
+
+        if updated_count:
+            bump_cache_version(DOMAIN_ATHLETES)
 
         return updated_count
     finally:

@@ -233,6 +233,7 @@ def render_soft_aggrid(
     header_height: int = DEFAULT_HEADER_HEIGHT,
     floating_filters_height: int = DEFAULT_FLOATING_FILTERS_HEIGHT,
     row_height: int = DEFAULT_ROW_HEIGHT,
+    update_mode: GridUpdateMode = GridUpdateMode.NO_UPDATE,
 ) -> Any:
     effective_height = height
     if effective_height is None:
@@ -249,11 +250,7 @@ def render_soft_aggrid(
         df,
         gridOptions=grid_options,
         data_return_mode=DataReturnMode.AS_INPUT,
-        update_mode=(
-            GridUpdateMode.VALUE_CHANGED
-            | GridUpdateMode.MODEL_CHANGED
-            | GridUpdateMode.SELECTION_CHANGED
-        ),
+        update_mode=update_mode,
         fit_columns_on_grid_load=False,
         theme="streamlit",
         custom_css=AGGRID_STREAMLIT_LIKE_CSS,

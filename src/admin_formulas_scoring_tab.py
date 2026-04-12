@@ -5,7 +5,6 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select
 
 from src.admin_formulas_shared import (
     apply_pending_reset,
@@ -18,9 +17,8 @@ from src.admin_formulas_shared import (
     save_formula_group_draft,
     set_flash_message,
 )
-from src.database import get_session
+from src.athletes import list_athletes
 from src.matches import recompute_all_match_scores
-from src.models import Athlete
 from src.ratings import build_current_rating_map, recompute_ratings
 from src.scoring import calculate_match_points, get_age_at_event
 
@@ -161,13 +159,7 @@ Negli altri casi vale `1.0`.
     st.divider()
     st.subheader("Anteprima scoring")
 
-    session = get_session()
-    try:
-        athletes: list[Athlete] = list(
-            session.scalars(select(Athlete).where(Athlete.active == True)).all()
-        )
-    finally:
-        session.close()
+    athletes = list_athletes(include_inactive=False)
 
     if len(athletes) < 2:
         st.info("Servono almeno due atleti attivi per mostrare l'anteprima.")

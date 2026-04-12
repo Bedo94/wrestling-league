@@ -4,14 +4,16 @@ import math
 import re
 import tomllib
 from copy import deepcopy
+from functools import lru_cache
 from typing import Any, Optional
 
 import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from src.database import get_session
+from src.database import get_database_url, get_session
 from src.models import FormulaRevision
+from src.query_cache import DOMAIN_FORMULAS, bump_cache_version, get_cache_version
 from src.settings import (
     ATHLETE_RANKING_SETTINGS,
     LEVEL_EVALUATION_SETTINGS,
@@ -208,16 +210,12 @@ def get_full_config(
     environment_name: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     resolved_environment_name = _resolve_environment_name(environment_name)
-    active_revision = get_active_formula_revision(resolved_environment_name)
-
-    if active_revision is None:
-        return get_all_defaults()
-
-    config = deserialize_full_config_text(
-        active_revision.config_text,
-        config_format=active_revision.config_format,
+    cached_config = _get_full_config_cached(
+        get_database_url(hide_password=False),
+        get_cache_version(DOMAIN_FORMULAS),
+        resolved_environment_name,
     )
-    return _merge_config_with_defaults(config)
+    return deepcopy(cached_config)
 
 
 def get_current_group_config(
@@ -333,40 +331,22 @@ def list_formula_revisions(
         else None
     )
 
-    session = get_session()
-    try:
-        stmt = select(FormulaRevision)
-
-        if resolved_environment_name:
-            stmt = stmt.where(
-                FormulaRevision.environment_name == resolved_environment_name
-            )
-
-        if only_active is not None:
-            stmt = stmt.where(FormulaRevision.is_active.is_(only_active))
-
-        stmt = stmt.order_by(
-            FormulaRevision.environment_name.asc(),
-            FormulaRevision.revision_number.desc(),
+    return list(
+        _list_formula_revisions_cached(
+            get_database_url(hide_password=False),
+            get_cache_version(DOMAIN_FORMULAS),
+            resolved_environment_name,
+            only_active,
         )
-
-        try:
-            return list(session.scalars(stmt).all())
-        except (OperationalError, ProgrammingError):
-            return []
-    finally:
-        session.close()
+    )
 
 
 def get_formula_revision_by_id(formula_revision_id: int) -> Optional[FormulaRevision]:
-    session = get_session()
-    try:
-        try:
-            return session.get(FormulaRevision, formula_revision_id)
-        except (OperationalError, ProgrammingError):
-            return None
-    finally:
-        session.close()
+    return _get_formula_revision_by_id_cached(
+        get_database_url(hide_password=False),
+        get_cache_version(DOMAIN_FORMULAS),
+        formula_revision_id,
+    )
 
 
 def get_formula_revision_config(formula_revision_id: int) -> dict[str, Any]:
@@ -390,6 +370,19 @@ def get_formula_revision_config(formula_revision_id: int) -> dict[str, Any]:
 
 def get_active_formula_revision(environment_name: str | None = None) -> Optional[FormulaRevision]:
     resolved_environment_name = _resolve_environment_name(environment_name)
+    return _get_active_formula_revision_cached(
+        get_database_url(hide_password=False),
+        get_cache_version(DOMAIN_FORMULAS),
+        resolved_environment_name,
+    )
+
+
+@lru_cache(maxsize=32)
+def _get_active_formula_revision_cached(
+    database_url: str,
+    formulas_version: int,
+    resolved_environment_name: str,
+) -> Optional[FormulaRevision]:
     session = get_session()
     try:
         try:
@@ -405,6 +398,76 @@ def get_active_formula_revision(environment_name: str | None = None) -> Optional
             return None
     finally:
         session.close()
+
+
+@lru_cache(maxsize=64)
+def _get_formula_revision_by_id_cached(
+    database_url: str,
+    formulas_version: int,
+    formula_revision_id: int,
+) -> Optional[FormulaRevision]:
+    session = get_session()
+    try:
+        try:
+            return session.get(FormulaRevision, formula_revision_id)
+        except (OperationalError, ProgrammingError):
+            return None
+    finally:
+        session.close()
+
+
+@lru_cache(maxsize=32)
+def _list_formula_revisions_cached(
+    database_url: str,
+    formulas_version: int,
+    resolved_environment_name: str | None,
+    only_active: Optional[bool],
+) -> tuple[FormulaRevision, ...]:
+    session = get_session()
+    try:
+        stmt = select(FormulaRevision)
+
+        if resolved_environment_name:
+            stmt = stmt.where(
+                FormulaRevision.environment_name == resolved_environment_name
+            )
+
+        if only_active is not None:
+            stmt = stmt.where(FormulaRevision.is_active.is_(only_active))
+
+        stmt = stmt.order_by(
+            FormulaRevision.environment_name.asc(),
+            FormulaRevision.revision_number.desc(),
+        )
+
+        try:
+            return tuple(session.scalars(stmt).all())
+        except (OperationalError, ProgrammingError):
+            return ()
+    finally:
+        session.close()
+
+
+@lru_cache(maxsize=32)
+def _get_full_config_cached(
+    database_url: str,
+    formulas_version: int,
+    resolved_environment_name: str,
+) -> dict[str, dict[str, Any]]:
+    active_revision = _get_active_formula_revision_cached(
+        database_url,
+        formulas_version,
+        resolved_environment_name,
+    )
+
+    if active_revision is None:
+        return get_all_defaults()
+
+    config = deserialize_full_config_text(
+        active_revision.config_text,
+        config_format=active_revision.config_format,
+    )
+    return _merge_config_with_defaults(config)
 
 
 def apply_full_config(config: dict[str, dict[str, Any]]) -> None:
@@ -474,6 +537,8 @@ def create_formula_revision(
     finally:
         session.close()
 
+    bump_cache_version(DOMAIN_FORMULAS)
+
     if activate:
         load_config(environment_name=resolved_environment_name)
 
@@ -508,6 +573,8 @@ def activate_formula_revision(formula_revision_id: int) -> None:
         session.commit()
     finally:
         session.close()
+
+    bump_cache_version(DOMAIN_FORMULAS)
 
     if environment_name is not None:
         load_config(environment_name=environment_name)

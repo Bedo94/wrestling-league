@@ -1,13 +1,22 @@
 from datetime import date
+from functools import lru_cache
 from typing import Optional, TypedDict
 
 from sqlalchemy import func, select
 
-from src.database import get_session
+from src.database import get_database_url, get_session
 from src.models import Athlete, Event, Match
+from src.query_cache import (
+    DOMAIN_ATHLETES,
+    DOMAIN_EVENTS,
+    DOMAIN_MATCHES,
+    build_signature,
+    bump_cache_version,
+    get_cache_version,
+)
 from src.reference_data import WIN_TYPE_OPTIONS
 from src.scoring import MatchPointsPreview, calculate_match_points
-from src.settings import TOKEN_SETTINGS
+from src.settings import SCORING_SETTINGS, TOKEN_SETTINGS
 from src.token_usage import (
     get_token_spender_id_from_used_by,
     get_token_used_by_from_spender_id,
@@ -371,6 +380,38 @@ def build_match_points_map_from_loaded(
     return points_by_match_id
 
 
+@lru_cache(maxsize=32)
+def _build_match_points_map_cached(
+    database_url: str,
+    athletes_version: int,
+    events_version: int,
+    matches_version: int,
+    scoring_signature: str,
+) -> tuple[tuple[int, float, float], ...]:
+    session = get_session()
+    try:
+        matches = list(session.scalars(select(Match).order_by(Match.id.asc())).all())
+        events = list(session.scalars(select(Event)).all())
+        athletes = list(session.scalars(select(Athlete)).all())
+
+        points_by_match_id = build_match_points_map_from_loaded(
+            matches=matches,
+            events_by_id={event.id: event for event in events},
+            athletes_by_id={athlete.id: athlete for athlete in athletes},
+        )
+
+        return tuple(
+            (
+                match_id,
+                float(values["points_a"]),
+                float(values["points_b"]),
+            )
+            for match_id, values in sorted(points_by_match_id.items())
+        )
+    finally:
+        session.close()
+
+
 def build_match_points_map() -> dict[int, DerivedMatchPoints]:
     """
     Calcola i punti classifica dei match senza scrivere nel DB.
@@ -378,19 +419,20 @@ def build_match_points_map() -> dict[int, DerivedMatchPoints]:
     Per record incompleti o non ricalcolabili mantiene un fallback
     neutro a zero, così il read-side resta stabile durante la transizione.
     """
-    session = get_session()
-    try:
-        matches = list(session.scalars(select(Match).order_by(Match.id.asc())).all())
-        events = list(session.scalars(select(Event)).all())
-        athletes = list(session.scalars(select(Athlete)).all())
-
-        return build_match_points_map_from_loaded(
-            matches=matches,
-            events_by_id={event.id: event for event in events},
-            athletes_by_id={athlete.id: athlete for athlete in athletes},
-        )
-    finally:
-        session.close()
+    cached_rows = _build_match_points_map_cached(
+        get_database_url(hide_password=False),
+        get_cache_version(DOMAIN_ATHLETES),
+        get_cache_version(DOMAIN_EVENTS),
+        get_cache_version(DOMAIN_MATCHES),
+        build_signature(SCORING_SETTINGS),
+    )
+    return {
+        match_id: {
+            "points_a": points_a,
+            "points_b": points_b,
+        }
+        for match_id, points_a, points_b in cached_rows
+    }
 
 
 def create_match(
@@ -483,6 +525,7 @@ def create_match(
         session.commit()
         session.refresh(match)
         session.expunge(match)
+        bump_cache_version(DOMAIN_MATCHES)
         return match
     finally:
         session.close()
@@ -586,6 +629,7 @@ def replace_match(
 
         session.refresh(existing_match)
         session.expunge(existing_match)
+        bump_cache_version(DOMAIN_MATCHES)
         return existing_match
     finally:
         session.close()
@@ -599,17 +643,28 @@ def delete_match(match_id: int) -> None:
             if match is None:
                 raise ValueError(f"Incontro con ID {match_id} non trovato.")
             session.delete(match)
+        bump_cache_version(DOMAIN_MATCHES)
+    finally:
+        session.close()
+
+
+@lru_cache(maxsize=32)
+def _list_matches_cached(database_url: str, version: int) -> tuple[Match, ...]:
+    session = get_session()
+    try:
+        stmt = select(Match).order_by(Match.id.desc())
+        return tuple(session.scalars(stmt).all())
     finally:
         session.close()
 
 
 def list_matches() -> list[Match]:
-    session = get_session()
-    try:
-        stmt = select(Match).order_by(Match.id.desc())
-        return list(session.scalars(stmt).all())
-    finally:
-        session.close()
+    return list(
+        _list_matches_cached(
+            get_database_url(hide_password=False),
+            get_cache_version(DOMAIN_MATCHES),
+        )
+    )
 
 def recompute_all_match_scores() -> int:
     session = get_session()
@@ -709,6 +764,8 @@ def backfill_match_sync_fields() -> int:
                 updated_count += 1
 
         session.commit()
+        if updated_count:
+            bump_cache_version(DOMAIN_MATCHES)
         return updated_count
     finally:
         session.close()

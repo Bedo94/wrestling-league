@@ -34,6 +34,13 @@ from src.export_service import (
     export_active_database_to_excel_bytes,
     export_active_database_to_sqlite_bytes,
 )
+from src.query_cache import (
+    DOMAIN_ATHLETES,
+    DOMAIN_EVENTS,
+    DOMAIN_FORMULAS,
+    DOMAIN_MATCHES,
+    bump_cache_version,
+)
 from src.sync_service import sync_raw_data
 
 LOCATION_OPTIONS = (
@@ -951,6 +958,14 @@ def render_sync_tab(*, can_run_sync: bool) -> None:
                 anteprima_sync=anteprima_sync,
             )
             result["request_signature"] = request_signature
+
+            if result.get("ok", False) and not anteprima_sync:
+                bump_cache_version(
+                    DOMAIN_ATHLETES,
+                    DOMAIN_EVENTS,
+                    DOMAIN_MATCHES,
+                    DOMAIN_FORMULAS,
+                )
 
             st.session_state[LAST_SYNC_RESULT_KEY] = result
             st.rerun()

@@ -1,12 +1,20 @@
 from collections.abc import Mapping
 from datetime import date
+from functools import lru_cache
 from typing import Literal, TypedDict
 
 from sqlalchemy import select
 
-from src.database import get_session
+from src.database import get_database_url, get_session
 from src.matches import build_match_points_map
 from src.models import Athlete, Event, Match
+from src.query_cache import (
+    DOMAIN_ATHLETES,
+    DOMAIN_EVENTS,
+    DOMAIN_MATCHES,
+    build_signature,
+    get_cache_version,
+)
 from src.settings import RATINGS_SETTINGS
 
 
@@ -266,22 +274,42 @@ def build_current_rating_map_from_loaded(
     )
 
 
-def build_current_rating_map() -> dict[int, float]:
-    """
-    Calcola i rating correnti a partire dai match registrati senza scrivere nel DB.
-    """
+@lru_cache(maxsize=32)
+def _build_current_rating_map_cached(
+    database_url: str,
+    athletes_version: int,
+    events_version: int,
+    matches_version: int,
+    ratings_signature: str,
+) -> tuple[tuple[int, float], ...]:
     session = get_session()
     try:
         athletes = list(session.scalars(select(Athlete).order_by(Athlete.id)).all())
         rows = _load_rating_replay_rows(session)
         match_points_by_id = build_match_points_map()
-        return _build_rating_map_from_rows(
+        rating_map = _build_rating_map_from_rows(
             athletes,
             rows,
             match_points_by_id=match_points_by_id,
         )
+        return tuple(sorted(rating_map.items()))
     finally:
         session.close()
+
+
+def build_current_rating_map() -> dict[int, float]:
+    """
+    Calcola i rating correnti a partire dai match registrati senza scrivere nel DB.
+    """
+    return dict(
+        _build_current_rating_map_cached(
+            get_database_url(hide_password=False),
+            get_cache_version(DOMAIN_ATHLETES),
+            get_cache_version(DOMAIN_EVENTS),
+            get_cache_version(DOMAIN_MATCHES),
+            build_signature(RATINGS_SETTINGS),
+        )
+    )
 
 
 def recompute_ratings() -> Mapping[int, float]:

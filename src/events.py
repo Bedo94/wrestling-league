@@ -1,10 +1,12 @@
 from datetime import date, datetime
+from functools import lru_cache
 from typing import Any, Optional
 
 from sqlalchemy import func, select
 
-from src.database import get_session
+from src.database import get_database_url, get_session
 from src.models import Event, Match
+from src.query_cache import DOMAIN_EVENTS, bump_cache_version, get_cache_version
 
 
 def _clean_optional_text(value: Any) -> Optional[str]:
@@ -54,19 +56,30 @@ def create_event(
         session.add(event)
         session.commit()
         session.refresh(event)
+        bump_cache_version(DOMAIN_EVENTS)
         return event
+    finally:
+        session.close()
+
+
+@lru_cache(maxsize=32)
+def _list_events_cached(database_url: str, version: int) -> tuple[Event, ...]:
+    session = get_session()
+    try:
+        stmt = select(Event).order_by(Event.event_date.desc(), Event.id.desc())
+        return tuple(session.scalars(stmt).all())
     finally:
         session.close()
 
 
 def list_events() -> list[Event]:
     """Restituisce tutti gli eventi ordinati per data decrescente."""
-    session = get_session()
-    try:
-        stmt = select(Event).order_by(Event.event_date.desc(), Event.id.desc())
-        return list(session.scalars(stmt).all())
-    finally:
-        session.close()
+    return list(
+        _list_events_cached(
+            get_database_url(hide_password=False),
+            get_cache_version(DOMAIN_EVENTS),
+        )
+    )
 
 
 def _count_event_match_references(session, event_id: int) -> int:
@@ -100,6 +113,9 @@ def delete_events_if_unused(event_ids: list[int]) -> list[str]:
                 deleted_names.append(event.name)
                 session.delete(event)
 
+        if deleted_names:
+            bump_cache_version(DOMAIN_EVENTS)
+
         return deleted_names
     finally:
         session.close()
@@ -126,6 +142,9 @@ def update_events_from_rows(rows: list[dict[str, Any]]) -> int:
                 event.event_date = event_date
                 event.notes = _clean_optional_text(row.get("Note"))
                 updated_count += 1
+        if updated_count:
+            bump_cache_version(DOMAIN_EVENTS)
+
         return updated_count
     finally:
         session.close()

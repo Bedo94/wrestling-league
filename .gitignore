@@ -4,3 +4,4 @@ __pycache__/
 #data/*.db
 .env
 #.streamlit/secrets.toml
+/data/uploaded_dbs/OpenMat_CusBg_01042026_current_schema.db
