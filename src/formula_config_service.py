@@ -416,6 +416,40 @@ def _get_formula_revision_by_id_cached(
         session.close()
 
 
+@lru_cache(maxsize=64)
+def _get_formula_revision_config_cached(
+    database_url: str,
+    formulas_version: int,
+    formula_revision_id: int,
+) -> dict[str, dict[str, Any]]:
+    session = get_session()
+    try:
+        try:
+            formula_revision = session.get(FormulaRevision, formula_revision_id)
+        except (OperationalError, ProgrammingError) as exc:
+            raise ValueError("La tabella formula_revisions non Ã¨ ancora disponibile.") from exc
+        if formula_revision is None:
+            raise ValueError(f"FormulaRevision non trovata: id={formula_revision_id}")
+        return _merge_config_with_defaults(
+            deserialize_full_config_text(
+                formula_revision.config_text,
+                config_format=formula_revision.config_format,
+            )
+        )
+    finally:
+        session.close()
+
+
+def get_formula_revision_config(formula_revision_id: int) -> dict[str, Any]:
+    return deepcopy(
+        _get_formula_revision_config_cached(
+            get_database_url(hide_password=False),
+            get_cache_version(DOMAIN_FORMULAS),
+            formula_revision_id,
+        )
+    )
+
+
 @lru_cache(maxsize=32)
 def _list_formula_revisions_cached(
     database_url: str,

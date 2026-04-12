@@ -623,7 +623,7 @@ def _render_match_form(
                 f"B(base={preview['result_base_b']}, bonus={preview['performance_bonus_b']})."
             ),
         )
-        _rerun_fragment_or_app()
+        st.rerun()
     except ValueError as exc:
         st.error(str(exc))
 
@@ -716,7 +716,7 @@ def _render_manage_section(
                                 f"{len(pending_delete_ids)} incontri eliminati correttamente.",
                             )
 
-                        _rerun_fragment_or_app()
+                        st.rerun()
                     except ValueError as exc:
                         st.error(str(exc))
 

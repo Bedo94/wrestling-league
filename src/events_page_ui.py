@@ -95,6 +95,7 @@ def _render_event_creation_form() -> None:
     st.session_state[EVENTS_CREATE_SUCCESS_KEY] = (
         f"Evento salvato: {event.name} (id={event.id})"
     )
+    st.rerun()
 
 
 @st.fragment
