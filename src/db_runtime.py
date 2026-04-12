@@ -76,6 +76,10 @@ LEAGUE_REMOTE_URL_ENV_KEYS = (
 )
 
 REMOTE_DATABASES_SECRET_KEY = "remote_databases"
+DEFAULT_REMOTE_DATABASE_KEY_KEYS = (
+    "WL_DEFAULT_REMOTE_DATABASE_KEY",
+    "DEFAULT_REMOTE_DATABASE_KEY",
+)
 
 
 def _first_env_value(keys: tuple[str, ...], default: str = "") -> str:
@@ -83,6 +87,21 @@ def _first_env_value(keys: tuple[str, ...], default: str = "") -> str:
         value = os.getenv(key)
         if value:
             return value
+    return default
+
+
+def _first_runtime_value(keys: tuple[str, ...], default: str = "") -> str:
+    env_value = _first_env_value(keys)
+    if env_value:
+        return env_value
+
+    secrets_root = _get_secrets_root()
+
+    for key in keys:
+        value = secrets_root.get(key)
+        if value:
+            return str(value)
+
     return default
 
 
@@ -325,11 +344,32 @@ def _find_remote_key_by_url(url: str) -> str:
 
 def _get_default_remote_entry() -> dict[str, str] | None:
     catalog = get_configured_remote_databases()
+
+    preferred_key = sanitize_remote_database_key(
+        _first_runtime_value(DEFAULT_REMOTE_DATABASE_KEY_KEYS)
+    )
+
+    if preferred_key and preferred_key in catalog:
+        return catalog[preferred_key]
+
     return next(iter(catalog.values()), None)
+
+
+def _get_bootstrap_remote_entry() -> dict[str, str] | None:
+    catalog = get_configured_remote_databases()
+    preferred_key = sanitize_remote_database_key(
+        _first_runtime_value(DEFAULT_REMOTE_DATABASE_KEY_KEYS)
+    )
+
+    if not preferred_key:
+        return None
+
+    return catalog.get(preferred_key)
 
 
 def _infer_initial_state() -> tuple[str, str, str, str, str, str, str]:
     current_sqlite_path = get_current_sqlite_path()
+    bootstrap_remote_entry = _get_bootstrap_remote_entry()
 
     if current_sqlite_path is None:
         current_url = sanitize_database_url(get_database_url(hide_password=False))
@@ -353,8 +393,18 @@ def _infer_initial_state() -> tuple[str, str, str, str, str, str, str]:
             remote_description,
         )
 
+    if bootstrap_remote_entry is not None:
+        return (
+            DB_MODE_POSTGRES,
+            "",
+            bootstrap_remote_entry["url"],
+            DB_ENV_LEAGUE_REMOTE,
+            bootstrap_remote_entry["key"],
+            bootstrap_remote_entry["label"],
+            bootstrap_remote_entry["description"],
+        )
+
     resolved_path = current_sqlite_path.resolve()
-    default_remote_entry = _get_default_remote_entry()
 
     return (
         DB_MODE_SQLITE,
