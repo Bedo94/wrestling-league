@@ -6,12 +6,9 @@ from src.db_runtime import (
     DB_MODE_POSTGRES,
     get_active_database_info,
 )
+from src.page_config import apply_page_config
 
-st.set_page_config(
-    page_title="Wrestling League",
-    page_icon="🤼",
-    layout="wide",
-)
+apply_page_config()
 
 active_db = get_active_database_info()
 
