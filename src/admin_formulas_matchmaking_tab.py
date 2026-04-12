@@ -25,6 +25,7 @@ from src.pairing import calculate_age, generate_candidate_pairs
 from src.ratings import build_current_rating_map
 
 
+@st.fragment
 def render_matchmaking_tab() -> None:
     config = get_formula_draft_config()
     matchmaking_config: dict[str, Any] = config.get("matchmaking", {})

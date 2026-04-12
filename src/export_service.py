@@ -45,6 +45,30 @@ def _sanitize_sheet_name(sheet_name: str, used_names: set[str]) -> str:
     return candidate
 
 
+def _make_excel_safe_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    excel_df = dataframe.copy()
+
+    for column_name in excel_df.columns:
+        column = excel_df[column_name]
+
+        if pd.api.types.is_datetime64tz_dtype(column):
+            excel_df[column_name] = column.dt.tz_localize(None)
+            continue
+
+        if column.dtype == "object":
+            excel_df[column_name] = column.map(
+                lambda value: (
+                    value.tz_localize(None)
+                    if isinstance(value, pd.Timestamp) and value.tzinfo is not None
+                    else value.replace(tzinfo=None)
+                    if hasattr(value, "tzinfo") and getattr(value, "tzinfo", None) is not None
+                    else value
+                )
+            )
+
+    return excel_df
+
+
 def export_active_database_to_excel_bytes() -> bytes:
     engine = get_engine()
     table_names = list_exportable_tables()
@@ -60,6 +84,7 @@ def export_active_database_to_excel_bytes() -> bytes:
         else:
             for table_name in table_names:
                 dataframe = pd.read_sql_table(table_name, engine)
+                dataframe = _make_excel_safe_dataframe(dataframe)
                 sheet_name = _sanitize_sheet_name(table_name, used_sheet_names)
                 dataframe.to_excel(writer, sheet_name=sheet_name, index=False)
 

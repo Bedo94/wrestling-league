@@ -49,6 +49,7 @@ def _render_medal_inputs(
     return int(gold), int(silver), int(bronze)
 
 
+@st.fragment
 def render_level_assistant(
     *,
     state_prefix: str,

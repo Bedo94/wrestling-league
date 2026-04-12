@@ -360,6 +360,7 @@ def _render_matches_list(
     return selected_match_ids, selected_match
 
 
+@st.fragment
 def _render_match_form(
     *,
     events_map,
@@ -447,34 +448,17 @@ def _render_match_form(
             key=MATCH_RAW_SCORE_B_KEY,
         )
 
-    winner_col1, winner_col2 = st.columns(2)
-    current_winner_choice = st.session_state.get(MATCH_WINNER_CHOICE_KEY, "Atleta A")
-
-    with winner_col1:
-        st.markdown("#### Esito atleta A")
-        if st.button(
-            f"Vince {format_athlete_name(athlete_a)}",
-            type="primary" if current_winner_choice == "Atleta A" else "secondary",
-            use_container_width=True,
-            key="winner_button_a",
-        ):
-            if st.session_state.get(MATCH_WINNER_CHOICE_KEY) != "Atleta A":
-                st.session_state[MATCH_WINNER_CHOICE_KEY] = "Atleta A"
-                st.rerun()
-
-    with winner_col2:
-        st.markdown("#### Esito atleta B")
-        if st.button(
-            f"Vince {format_athlete_name(athlete_b)}",
-            type="primary" if current_winner_choice == "Atleta B" else "secondary",
-            use_container_width=True,
-            key="winner_button_b",
-        ):
-            if st.session_state.get(MATCH_WINNER_CHOICE_KEY) != "Atleta B":
-                st.session_state[MATCH_WINNER_CHOICE_KEY] = "Atleta B"
-                st.rerun()
-
-    winner_choice = st.session_state.get(MATCH_WINNER_CHOICE_KEY, "Atleta A")
+    winner_choice = st.radio(
+        "Vincitore *",
+        options=["Atleta A", "Atleta B"],
+        format_func=lambda choice: (
+            f"{choice} - {format_athlete_name(athlete_a)}"
+            if choice == "Atleta A"
+            else f"{choice} - {format_athlete_name(athlete_b)}"
+        ),
+        horizontal=True,
+        key=MATCH_WINNER_CHOICE_KEY,
+    )
 
     win_type = st.selectbox(
         "Modo di vittoria *",
@@ -495,47 +479,16 @@ def _render_match_form(
     token_spender_id: Optional[int] = None
 
     if token_enabled:
-        st.markdown("#### Chi spende il token?")
-        current_token_used_by: TokenUsedBy = st.session_state.get(
-            MATCH_TOKEN_USED_BY_KEY,
-            TOKEN_USED_BY_ATHLETE_A,
-        )
-
-        token_col1, token_col2 = st.columns(2)
-
-        with token_col1:
-            if st.button(
-                format_athlete_name(athlete_a),
-                type=(
-                    "primary"
-                    if current_token_used_by == TOKEN_USED_BY_ATHLETE_A
-                    else "secondary"
-                ),
-                use_container_width=True,
-                key="token_spender_button_a",
-            ):
-                if st.session_state.get(MATCH_TOKEN_USED_BY_KEY) != TOKEN_USED_BY_ATHLETE_A:
-                    st.session_state[MATCH_TOKEN_USED_BY_KEY] = TOKEN_USED_BY_ATHLETE_A
-                    st.rerun()
-
-        with token_col2:
-            if st.button(
-                format_athlete_name(athlete_b),
-                type=(
-                    "primary"
-                    if current_token_used_by == TOKEN_USED_BY_ATHLETE_B
-                    else "secondary"
-                ),
-                use_container_width=True,
-                key="token_spender_button_b",
-            ):
-                if st.session_state.get(MATCH_TOKEN_USED_BY_KEY) != TOKEN_USED_BY_ATHLETE_B:
-                    st.session_state[MATCH_TOKEN_USED_BY_KEY] = TOKEN_USED_BY_ATHLETE_B
-                    st.rerun()
-
-        token_used_by: TokenUsedBy = st.session_state.get(
-            MATCH_TOKEN_USED_BY_KEY,
-            TOKEN_USED_BY_ATHLETE_A,
+        token_used_by: TokenUsedBy = st.radio(
+            "Chi spende il token?",
+            options=[TOKEN_USED_BY_ATHLETE_A, TOKEN_USED_BY_ATHLETE_B],
+            format_func=lambda used_by: (
+                format_athlete_name(athlete_a)
+                if used_by == TOKEN_USED_BY_ATHLETE_A
+                else format_athlete_name(athlete_b)
+            ),
+            horizontal=True,
+            key=MATCH_TOKEN_USED_BY_KEY,
         )
         token_spender = (
             athlete_a
@@ -671,6 +624,7 @@ def _render_match_form(
         st.error(str(exc))
 
 
+@st.fragment
 def _render_manage_section(
     *,
     matches: list[Match],

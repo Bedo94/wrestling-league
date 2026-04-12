@@ -23,6 +23,7 @@ from src.ratings import build_current_rating_map, recompute_ratings
 from src.scoring import calculate_match_points, get_age_at_event
 
 
+@st.fragment
 def render_scoring_tab() -> None:
     config = get_formula_draft_config()
     scoring_config: dict[str, Any] = config.get("scoring", {})

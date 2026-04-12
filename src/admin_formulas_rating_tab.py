@@ -31,6 +31,7 @@ from src.ratings import (
 )
 
 
+@st.fragment
 def render_rating_tab() -> None:
     config = get_formula_draft_config()
     rating_config: dict[str, Any] = config.get("ratings", {})

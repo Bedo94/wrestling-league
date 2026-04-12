@@ -303,6 +303,7 @@ def render_team_rankings_table(
     return True
 
 
+@st.fragment
 def render_rankings_panel(
 
     *,
