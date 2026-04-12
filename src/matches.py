@@ -648,6 +648,34 @@ def delete_match(match_id: int) -> None:
         session.close()
 
 
+def delete_matches(match_ids: list[int]) -> int:
+    normalized_ids = list(dict.fromkeys(int(match_id) for match_id in match_ids))
+    if not normalized_ids:
+        return 0
+
+    session = get_session()
+    try:
+        with session.begin():
+            matches = list(
+                session.scalars(
+                    select(Match).where(Match.id.in_(normalized_ids))
+                ).all()
+            )
+            matches_by_id = {match.id: match for match in matches}
+
+            for match_id in normalized_ids:
+                if match_id not in matches_by_id:
+                    raise ValueError(f"Incontro con ID {match_id} non trovato.")
+
+            for match_id in normalized_ids:
+                session.delete(matches_by_id[match_id])
+
+        bump_cache_version(DOMAIN_MATCHES)
+        return len(normalized_ids)
+    finally:
+        session.close()
+
+
 @lru_cache(maxsize=32)
 def _list_matches_cached(database_url: str, version: int) -> tuple[Match, ...]:
     session = get_session()

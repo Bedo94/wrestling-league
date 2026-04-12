@@ -572,22 +572,28 @@ def render_import_export_tab(
 
     if selected_location == DB_LOCATION_LOCAL:
         st.caption(
-            "Lavora su un file SQLite locale. "
-            "Puoi indicare un path esistente oppure importare un file .db."
+            "Lavora su un file SQLite gia presente nel progetto/server oppure carica "
+            "un file .db dal tuo computer tramite il browser."
+        )
+        st.info(
+            "Nella web app il percorso qui sotto si riferisce al filesystem del server "
+            "che ospita Streamlit, non al PC dell'utente. Se carichi un file dal browser, "
+            "il database viene copiato sul backend e puo non essere persistente dopo reboot o redeploy."
         )
 
         sqlite_path = st.text_input(
-            "Percorso file .db",
+            "Percorso file .db gia presente nel progetto/server",
             value=get_league_local_sqlite_path(),
             disabled=not can_edit_database,
             help=(
+                "Usa questo campo solo per file gia presenti sul filesystem in cui gira l'app. "
                 "Puoi incollare anche un path con virgolette o spazi esterni: "
                 "l'app li ripulisce automaticamente."
             ),
         )
 
         uploaded_sqlite_file = st.file_uploader(
-            "Oppure scegli un file .db dal computer",
+            "Oppure carica un file .db dal tuo computer",
             type=["db", "sqlite", "sqlite3"],
             accept_multiple_files=False,
             disabled=not can_edit_database,
@@ -595,7 +601,7 @@ def render_import_export_tab(
 
         if uploaded_sqlite_file is not None:
             preview_path = build_uploaded_sqlite_destination(uploaded_sqlite_file.name)
-            st.caption(f"Il file verrà salvato in: {preview_path}")
+            st.caption(f"Il file verra copiato sul backend in: {preview_path}")
 
         if st.button(
             "Attiva database locale",

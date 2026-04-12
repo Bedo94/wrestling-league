@@ -121,6 +121,53 @@ def delete_events_if_unused(event_ids: list[int]) -> list[str]:
         session.close()
 
 
+def delete_events_if_unused(event_ids: list[int]) -> list[str]:
+    normalized_ids = list(dict.fromkeys(int(event_id) for event_id in event_ids))
+    if not normalized_ids:
+        return []
+
+    session = get_session()
+    try:
+        deleted_names: list[str] = []
+
+        with session.begin():
+            events = list(
+                session.scalars(
+                    select(Event).where(Event.id.in_(normalized_ids))
+                ).all()
+            )
+            events_by_id = {event.id: event for event in events}
+
+            for event_id in normalized_ids:
+                if event_id not in events_by_id:
+                    raise ValueError(f"Evento con ID {event_id} non trovato.")
+
+            referenced_event_ids = set(
+                session.execute(
+                    select(Match.event_id).where(Match.event_id.in_(normalized_ids))
+                ).scalars()
+            )
+
+            if referenced_event_ids:
+                blocking_event = events_by_id[next(iter(referenced_event_ids))]
+                raise ValueError(
+                    f"Non puoi eliminare l'evento '{blocking_event.name}': "
+                    "ha gia incontri associati."
+                )
+
+            for event_id in normalized_ids:
+                event = events_by_id[event_id]
+                deleted_names.append(event.name)
+                session.delete(event)
+
+        if deleted_names:
+            bump_cache_version(DOMAIN_EVENTS)
+
+        return deleted_names
+    finally:
+        session.close()
+
+
 def update_events_from_rows(rows: list[dict[str, Any]]) -> int:
     """
     Aggiorna gli eventi esistenti a partire da una lista di dizionari.

@@ -233,6 +233,70 @@ def delete_athletes_if_unused(athlete_ids: list[int]) -> list[str]:
         session.close()
 
 
+def delete_athletes_if_unused(athlete_ids: list[int]) -> list[str]:
+    normalized_ids = list(dict.fromkeys(int(athlete_id) for athlete_id in athlete_ids))
+    if not normalized_ids:
+        return []
+
+    session = get_session()
+    try:
+        deleted_names: list[str] = []
+
+        with session.begin():
+            athletes = list(
+                session.scalars(
+                    select(Athlete).where(Athlete.id.in_(normalized_ids))
+                ).all()
+            )
+            athletes_by_id = {athlete.id: athlete for athlete in athletes}
+
+            for athlete_id in normalized_ids:
+                if athlete_id not in athletes_by_id:
+                    raise ValueError(f"Atleta con ID {athlete_id} non trovato.")
+
+            reference_rows = session.execute(
+                select(
+                    Match.athlete_a_id,
+                    Match.athlete_b_id,
+                    Match.winner_id,
+                    Match.token_spender_id,
+                ).where(
+                    or_(
+                        Match.athlete_a_id.in_(normalized_ids),
+                        Match.athlete_b_id.in_(normalized_ids),
+                        Match.winner_id.in_(normalized_ids),
+                        Match.token_spender_id.in_(normalized_ids),
+                    )
+                )
+            ).all()
+
+            referenced_ids = {
+                referenced_id
+                for row in reference_rows
+                for referenced_id in row
+                if referenced_id in athletes_by_id
+            }
+
+            if referenced_ids:
+                blocking_athlete = athletes_by_id[next(iter(referenced_ids))]
+                raise ValueError(
+                    f"Non puoi eliminare {_format_athlete_display_name(blocking_athlete)}: "
+                    "compare giÃ  in uno o piÃ¹ incontri."
+                )
+
+            for athlete_id in normalized_ids:
+                athlete = athletes_by_id[athlete_id]
+                deleted_names.append(_format_athlete_display_name(athlete))
+                session.delete(athlete)
+
+        if deleted_names:
+            bump_cache_version(DOMAIN_ATHLETES)
+
+        return deleted_names
+    finally:
+        session.close()
+
+
 def update_athletes_from_rows(rows: list[dict[str, Any]]) -> int:
     session = get_session()
     try:

@@ -91,7 +91,15 @@ def _render_event_creation_form() -> None:
     st.rerun()
 
 
+@st.fragment
 def _render_events_table(df: pd.DataFrame) -> None:
+    update_success_message = st.session_state.pop(
+        EVENTS_UPDATE_SUCCESS_KEY,
+        None,
+    )
+    if update_success_message:
+        st.success(update_success_message)
+
     table_result = render_table_component(
         df=df,
         spec=EVENTS_TABLE_SPEC,

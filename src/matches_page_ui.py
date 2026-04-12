@@ -16,7 +16,7 @@ from src.levels import get_level_label
 from src.matches import (
     build_match_points_map,
     create_match,
-    delete_match,
+    delete_matches,
     list_matches,
     replace_match,
 )
@@ -689,8 +689,7 @@ def _render_manage_section(
                     try:
                         editing_match_id = st.session_state.get(MATCH_EDIT_ID_KEY)
 
-                        for pending_match_id in pending_delete_ids:
-                            delete_match(pending_match_id)
+                        delete_matches(pending_delete_ids)
 
                         recompute_ratings()
 

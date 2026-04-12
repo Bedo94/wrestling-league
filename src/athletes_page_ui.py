@@ -25,6 +25,167 @@ ATHLETES_TABLE_NONCE_KEY = "athletes_table_nonce"
 ATHLETES_DELETE_CANDIDATE_IDS_KEY = "athletes_delete_candidate_ids"
 
 
+@st.fragment
+def _render_athletes_management_section() -> None:
+    st.divider()
+    st.subheader("Lista atleti")
+
+    show_inactive = st.checkbox("Mostra anche inattivi", value=True)
+
+    athletes = list_athletes(include_inactive=show_inactive)
+    all_matches = list_matches()
+    rating_by_athlete_id = build_current_rating_map()
+    level_profiles = build_athlete_level_profile_map(
+        athletes=athletes,
+        matches=all_matches,
+        rating_by_athlete_id=rating_by_athlete_id,
+    )
+
+    athletes_update_success_message = st.session_state.pop(
+        ATHLETES_UPDATE_SUCCESS_KEY,
+        None,
+    )
+    if athletes_update_success_message:
+        st.success(athletes_update_success_message)
+
+    if not athletes:
+        st.info("Nessun atleta presente.")
+        return
+
+    table_nonce = int(st.session_state.get(ATHLETES_TABLE_NONCE_KEY, 0))
+    df = pd.DataFrame(
+        [
+            {
+                "ID": a.id,
+                "Nome": a.first_name,
+                "Cognome": a.last_name or "",
+                "Nickname": a.nickname or "",
+                "Team": a.team or "",
+                "Data nascita": a.birth_date,
+                "Sesso": a.sex,
+                "Stile": a.style,
+                "Livello assegnato": get_level_label(a.level),
+                "Livello suggerito": get_level_label(
+                    level_profiles[a.id]["suggested_level"]
+                ),
+                "Peso": float(a.default_weight),
+                "Rating": (
+                    rating_by_athlete_id[a.id]
+                    if a.id in rating_by_athlete_id
+                    else "N.D."
+                ),
+                "Attivo": bool(a.active),
+            }
+            for a in athletes
+        ]
+    )
+
+    table_result = render_table_component(
+        df=df,
+        spec=ATHLETES_TABLE_SPEC,
+        renderer="aggrid",
+        key=f"athletes_table_{table_nonce}",
+    )
+
+    selected_athlete_ids: list[int] = []
+    if (
+        not table_result.selected_rows_df.empty
+        and "ID" in table_result.selected_rows_df.columns
+    ):
+        selected_athlete_ids = [
+            int(athlete_id)
+            for athlete_id in table_result.selected_rows_df["ID"].tolist()
+        ]
+
+    action_col1, action_col2 = st.columns(2)
+
+    if action_col1.button("Salva modifiche", type="primary", use_container_width=True):
+        try:
+            edited_df = ATHLETES_TABLE_SPEC.normalize_from_view(table_result.edited_df)
+            rows: list[dict[str, Any]] = [
+                {str(key): value for key, value in row.items()}
+                for row in edited_df.to_dict(orient="records")
+            ]
+            updated_count = update_athletes_from_rows(rows)
+            recompute_ratings()
+            st.session_state[ATHLETES_TABLE_NONCE_KEY] = table_nonce + 1
+            st.session_state[ATHLETES_UPDATE_SUCCESS_KEY] = (
+                f"Modifiche salvate correttamente ({updated_count} atleti aggiornati)."
+            )
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"Errore durante il salvataggio: {exc}")
+
+    if action_col2.button(
+        "Richiedi eliminazione selezionati",
+        use_container_width=True,
+        disabled=not selected_athlete_ids,
+    ):
+        st.session_state[ATHLETES_DELETE_CANDIDATE_IDS_KEY] = selected_athlete_ids
+        st.rerun()
+
+    pending_delete_ids = st.session_state.get(ATHLETES_DELETE_CANDIDATE_IDS_KEY, [])
+    athletes_by_id = {athlete.id: athlete for athlete in athletes}
+    pending_athletes = [
+        athletes_by_id[athlete_id]
+        for athlete_id in pending_delete_ids
+        if athlete_id in athletes_by_id
+    ]
+
+    if not pending_athletes:
+        return
+
+    if len(pending_athletes) == 1:
+        st.warning(
+            "Stai per eliminare un atleta. L'operazione e consentita solo se non compare in alcun incontro."
+        )
+    else:
+        st.warning(
+            f"Stai per eliminare {len(pending_athletes)} atleti. "
+            "L'operazione e consentita solo se nessuno di loro compare in incontri."
+        )
+
+    for athlete in pending_athletes[:10]:
+        athlete_name = f"{athlete.first_name} {athlete.last_name or ''}".strip()
+        st.caption(athlete_name or f"ID {athlete.id}")
+
+    if len(pending_athletes) > 10:
+        st.caption(f"... e altri {len(pending_athletes) - 10} atleti selezionati.")
+
+    confirm_col, cancel_col = st.columns(2)
+
+    if confirm_col.button(
+        "Conferma eliminazione atleti",
+        type="primary",
+        use_container_width=True,
+    ):
+        try:
+            deleted_names = delete_athletes_if_unused(pending_delete_ids)
+            st.session_state[ATHLETES_DELETE_CANDIDATE_IDS_KEY] = []
+            st.session_state[ATHLETES_TABLE_NONCE_KEY] = table_nonce + 1
+            if len(deleted_names) == 1:
+                st.session_state[ATHLETES_UPDATE_SUCCESS_KEY] = (
+                    f"Atleta eliminato: {deleted_names[0]}."
+                )
+            else:
+                st.session_state[ATHLETES_UPDATE_SUCCESS_KEY] = (
+                    f"Atleti eliminati correttamente ({len(deleted_names)})."
+                )
+            st.rerun()
+        except ValueError as exc:
+            st.session_state[ATHLETES_DELETE_CANDIDATE_IDS_KEY] = []
+            st.error(str(exc))
+
+    if cancel_col.button(
+        "Annulla eliminazione atleti",
+        use_container_width=True,
+    ):
+        st.session_state[ATHLETES_DELETE_CANDIDATE_IDS_KEY] = []
+        st.rerun()
+
+
 def render_athletes_page() -> None:
     st.title("Atleti")
 
@@ -131,6 +292,9 @@ il livello assegnato non modifica il rating di partenza.
                     f"(id={athlete.id}, livello assegnato={get_level_label(athlete.level)})"
                 )
                 st.rerun()
+
+    _render_athletes_management_section()
+    return
 
     st.divider()
 
