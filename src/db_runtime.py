@@ -8,6 +8,7 @@ from src.database import (
     DATA_DIR,
     DEFAULT_DB_PATH,
     configure_database,
+    get_configured_database_url,
     get_current_sqlite_path,
     get_database_url,
     normalize_sqlite_path,
@@ -59,6 +60,7 @@ STATE_SQLITE_PATH = "db_sqlite_path"
 STATE_POSTGRES_URL = "db_postgres_url"
 STATE_ACTIVE_DB_INFO = "active_db_info"
 STATE_DB_ENVIRONMENT = "db_environment"
+STATE_DB_BOOTSTRAP_SIGNATURE = "db_bootstrap_signature"
 
 STATE_LEAGUE_LOCAL_PATH = "db_league_local_path"
 STATE_LEAGUE_REMOTE_URL = "db_league_remote_url"
@@ -405,6 +407,7 @@ def _infer_initial_state() -> tuple[str, str, str, str, str, str, str]:
         )
 
     resolved_path = current_sqlite_path.resolve()
+    default_remote_entry = _get_default_remote_entry()
 
     return (
         DB_MODE_SQLITE,
@@ -600,6 +603,58 @@ def _apply_database(
     raise ValueError(f"Modalità database non supportata: {mode}")
 
 
+def _build_bootstrap_signature(
+    *,
+    mode: str,
+    sqlite_path: str,
+    postgres_url: str,
+    environment_name: str,
+) -> tuple[str, str, str, str]:
+    if mode == DB_MODE_SQLITE:
+        clean_path = sanitize_sqlite_path(sqlite_path)
+        resolved_path = normalize_sqlite_path(
+            clean_path or str(DEFAULT_DB_PATH.resolve())
+        )
+        return (
+            mode,
+            str(resolved_path),
+            "",
+            environment_name,
+        )
+
+    if mode == DB_MODE_POSTGRES:
+        clean_url = sanitize_database_url(postgres_url)
+        return (
+            mode,
+            "",
+            clean_url,
+            environment_name,
+        )
+
+    raise ValueError(f"ModalitÃ  database non supportata: {mode}")
+
+
+def _is_current_engine_aligned(
+    *,
+    mode: str,
+    sqlite_path: str,
+    postgres_url: str,
+) -> bool:
+    current_url = get_configured_database_url(hide_password=False)
+    if not current_url:
+        return False
+
+    if mode == DB_MODE_SQLITE:
+        expected_url = f"sqlite:///{normalize_sqlite_path(sqlite_path).as_posix()}"
+        return current_url == expected_url
+
+    if mode == DB_MODE_POSTGRES:
+        expected_url = sanitize_database_url(postgres_url)
+        return current_url == expected_url
+
+    return False
+
+
 def set_database_selection(
     *,
     mode: str,
@@ -641,6 +696,7 @@ def set_database_selection(
             STATE_LEAGUE_REMOTE_DESCRIPTION,
             "",
         ),
+        STATE_DB_BOOTSTRAP_SIGNATURE: st.session_state.get(STATE_DB_BOOTSTRAP_SIGNATURE),
         STATE_ACTIVE_DB_INFO: st.session_state.get(STATE_ACTIVE_DB_INFO),
     }
 
@@ -711,20 +767,53 @@ def set_database_selection(
         raise
 
     st.session_state[STATE_ACTIVE_DB_INFO] = info
+    st.session_state[STATE_DB_BOOTSTRAP_SIGNATURE] = _build_bootstrap_signature(
+        mode=mode,
+        sqlite_path=staged_sqlite_path,
+        postgres_url=staged_postgres_url,
+        environment_name=resolved_environment_name,
+    )
     return info
 
 
 def bootstrap_database_from_state() -> dict:
     ensure_db_state()
 
+    selected_mode = get_selected_mode()
+    selected_sqlite_path = get_selected_sqlite_path()
+    selected_postgres_url = get_selected_postgres_url()
+    selected_environment_name = get_selected_environment_name()
+
+    requested_signature = _build_bootstrap_signature(
+        mode=selected_mode,
+        sqlite_path=selected_sqlite_path,
+        postgres_url=selected_postgres_url,
+        environment_name=selected_environment_name,
+    )
+
+    cached_signature = st.session_state.get(STATE_DB_BOOTSTRAP_SIGNATURE)
+    cached_info = st.session_state.get(STATE_ACTIVE_DB_INFO)
+
+    if (
+        cached_info is not None
+        and cached_signature == requested_signature
+        and _is_current_engine_aligned(
+            mode=selected_mode,
+            sqlite_path=requested_signature[1],
+            postgres_url=requested_signature[2],
+        )
+    ):
+        return cached_info
+
     info = _apply_database(
-        mode=get_selected_mode(),
-        sqlite_path=get_selected_sqlite_path(),
-        postgres_url=get_selected_postgres_url(),
-        environment_name=get_selected_environment_name(),
+        mode=selected_mode,
+        sqlite_path=selected_sqlite_path,
+        postgres_url=selected_postgres_url,
+        environment_name=selected_environment_name,
     )
 
     st.session_state[STATE_ACTIVE_DB_INFO] = info
+    st.session_state[STATE_DB_BOOTSTRAP_SIGNATURE] = requested_signature
     return info
 
 

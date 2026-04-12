@@ -3,6 +3,8 @@ from sqlalchemy import inspect, text
 
 from src.database import Base, get_engine
 
+POSTGRES_SYNC_TRIGGER_LOCK_ID = 937451
+
 
 def _get_column_names(table_name: str) -> set[str]:
     inspector = inspect(get_engine())
@@ -41,6 +43,12 @@ def _drop_legacy_match_token_cost() -> None:
 
 def _ensure_postgres_sync_metadata_triggers(engine) -> None:
     with engine.begin() as connection:
+        # Serializza il bootstrap DDL tra sessioni concorrenti sullo stesso DB remoto.
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": POSTGRES_SYNC_TRIGGER_LOCK_ID},
+        )
+
         connection.execute(
             text(
                 """

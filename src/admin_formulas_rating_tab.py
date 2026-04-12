@@ -455,22 +455,22 @@ Se entrambi i punti sono zero, viene usato il vincitore di fallback; se non è d
         [
             {
                 "Parametro": "K factor",
-                "Valore": round(float(preview["k_factor"]), 4),
+                "Valore": f"{float(preview['k_factor']):.4f}",
                 "Significato": "Sensibilità base del rating",
             },
             {
                 "Parametro": "Impact",
-                "Valore": round(float(preview["impact"]), 4),
+                "Valore": f"{float(preview['impact']):.4f}",
                 "Significato": "Peso del tipo di match",
             },
             {
                 "Parametro": "K effettivo",
-                "Valore": round(float(preview["effective_k"]), 4),
+                "Valore": f"{float(preview['effective_k']):.4f}",
                 "Significato": "Prodotto K × impact",
             },
             {
                 "Parametro": "Logistic divisor",
-                "Valore": round(float(preview["logistic_divisor"]), 4),
+                "Valore": f"{float(preview['logistic_divisor']):.4f}",
                 "Significato": "Apre o chiude la forbice delle probabilità attese",
             },
             {

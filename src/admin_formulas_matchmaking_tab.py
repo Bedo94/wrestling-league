@@ -287,13 +287,13 @@ $$
             },
             {
                 "Componente": "Differenza level",
-                "Valore base": row["level_diff"],
+                "Valore base": str(row["level_diff"]),
                 "Parametro": f"x {matchmaking_config['level_factor']}",
                 "Contributo": row["level_component"],
             },
             {
                 "Componente": "Differenza rating",
-                "Valore base": row["rating_diff"],
+                "Valore base": str(row["rating_diff"]),
                 "Parametro": (
                     f"/ {matchmaking_config['rating_divisor']}"
                     if use_rating
@@ -303,13 +303,13 @@ $$
             },
             {
                 "Componente": "Differenza eta",
-                "Valore base": row["age_diff"],
+                "Valore base": str(row["age_diff"]),
                 "Parametro": f"x {matchmaking_config['age_factor']}",
                 "Contributo": row["age_component"],
             },
             {
                 "Componente": "Rematch penalty",
-                "Valore base": row["previous_matches"],
+                "Valore base": str(row["previous_matches"]),
                 "Parametro": (
                     f"x {matchmaking_config['rematch_penalty']}"
                     if avoid_rematches

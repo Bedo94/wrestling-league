@@ -119,6 +119,12 @@ def configure_database(
         resolved_url = resolve_database_url()
 
     if engine is not None:
+        current_url = engine.url.render_as_string(hide_password=False)
+        if current_url == resolved_url:
+            SessionLocal.configure(bind=engine)
+            DATABASE_URL = resolved_url
+            return engine
+
         engine.dispose()
 
     engine = create_engine(
@@ -146,6 +152,13 @@ def get_engine() -> Engine:
 
 def get_database_url(*, hide_password: bool = False) -> str:
     return get_engine().url.render_as_string(hide_password=hide_password)
+
+
+def get_configured_database_url(*, hide_password: bool = False) -> str | None:
+    if engine is None:
+        return None
+
+    return engine.url.render_as_string(hide_password=hide_password)
 
 
 def get_current_sqlite_path() -> Path | None:
