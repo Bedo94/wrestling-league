@@ -15,7 +15,7 @@ from src.athletes import (
 from src.level_evaluation_ui import render_level_assistant
 from src.levels import get_level_label, get_level_labels, get_level_from_label
 from src.matches import list_matches
-from src.ratings import build_current_rating_map, recompute_ratings
+from src.ratings import build_current_rating_map
 from src.reference_data import SEX_OPTIONS, STYLE_OPTIONS
 from src.table_component import render_table_component
 from src.table_specs import ATHLETES_TABLE_SPEC
@@ -23,6 +23,13 @@ from src.table_specs import ATHLETES_TABLE_SPEC
 ATHLETES_UPDATE_SUCCESS_KEY = "athletes_update_success_message"
 ATHLETES_TABLE_NONCE_KEY = "athletes_table_nonce"
 ATHLETES_DELETE_CANDIDATE_IDS_KEY = "athletes_delete_candidate_ids"
+
+
+def _rerun_fragment_or_app() -> None:
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
 
 
 @st.fragment
@@ -107,12 +114,11 @@ def _render_athletes_management_section() -> None:
                 for row in edited_df.to_dict(orient="records")
             ]
             updated_count = update_athletes_from_rows(rows)
-            recompute_ratings()
             st.session_state[ATHLETES_TABLE_NONCE_KEY] = table_nonce + 1
             st.session_state[ATHLETES_UPDATE_SUCCESS_KEY] = (
                 f"Modifiche salvate correttamente ({updated_count} atleti aggiornati)."
             )
-            st.rerun()
+            _rerun_fragment_or_app()
         except ValueError as exc:
             st.error(str(exc))
         except Exception as exc:
@@ -124,7 +130,6 @@ def _render_athletes_management_section() -> None:
         disabled=not selected_athlete_ids,
     ):
         st.session_state[ATHLETES_DELETE_CANDIDATE_IDS_KEY] = selected_athlete_ids
-        st.rerun()
 
     pending_delete_ids = st.session_state.get(ATHLETES_DELETE_CANDIDATE_IDS_KEY, [])
     athletes_by_id = {athlete.id: athlete for athlete in athletes}
@@ -173,7 +178,7 @@ def _render_athletes_management_section() -> None:
                 st.session_state[ATHLETES_UPDATE_SUCCESS_KEY] = (
                     f"Atleti eliminati correttamente ({len(deleted_names)})."
                 )
-            st.rerun()
+            _rerun_fragment_or_app()
         except ValueError as exc:
             st.session_state[ATHLETES_DELETE_CANDIDATE_IDS_KEY] = []
             st.error(str(exc))
@@ -183,7 +188,7 @@ def _render_athletes_management_section() -> None:
         use_container_width=True,
     ):
         st.session_state[ATHLETES_DELETE_CANDIDATE_IDS_KEY] = []
-        st.rerun()
+        _rerun_fragment_or_app()
 
 
 def render_athletes_page() -> None:
@@ -283,15 +288,12 @@ il livello assegnato non modifica il rating di partenza.
                     level=level,
                     default_weight=float(default_weight),
                 )
-                recompute_ratings()
-
                 st.session_state["reset_athlete_form_level_label"] = True
 
                 st.success(
                     f"Atleta salvato: {athlete.first_name} "
                     f"(id={athlete.id}, livello assegnato={get_level_label(athlete.level)})"
                 )
-                st.rerun()
 
     _render_athletes_management_section()
     return

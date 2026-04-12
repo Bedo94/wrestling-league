@@ -21,6 +21,13 @@ EVENTS_CREATE_SUCCESS_KEY = "events_create_success_message"
 EVENTS_DELETE_CANDIDATE_IDS_KEY = "events_delete_candidate_ids"
 
 
+def _rerun_fragment_or_app() -> None:
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
+
+
 def _build_events_dataframe() -> pd.DataFrame:
     events = list_events()
 
@@ -88,7 +95,6 @@ def _render_event_creation_form() -> None:
     st.session_state[EVENTS_CREATE_SUCCESS_KEY] = (
         f"Evento salvato: {event.name} (id={event.id})"
     )
-    st.rerun()
 
 
 @st.fragment
@@ -135,7 +141,7 @@ def _render_events_table(df: pd.DataFrame) -> None:
             st.session_state[EVENTS_UPDATE_SUCCESS_KEY] = (
                 f"Modifiche salvate correttamente ({updated_count} eventi aggiornati)."
             )
-            st.rerun()
+            _rerun_fragment_or_app()
         except ValueError as exc:
             st.error(str(exc))
         except Exception as exc:
@@ -147,7 +153,6 @@ def _render_events_table(df: pd.DataFrame) -> None:
         disabled=not selected_event_ids,
     ):
         st.session_state[EVENTS_DELETE_CANDIDATE_IDS_KEY] = selected_event_ids
-        st.rerun()
 
     events = list_events()
     events_by_id = {event.id: event for event in events}
@@ -193,7 +198,7 @@ def _render_events_table(df: pd.DataFrame) -> None:
                     st.session_state[EVENTS_UPDATE_SUCCESS_KEY] = (
                         f"Eventi eliminati correttamente ({len(deleted_names)})."
                     )
-                st.rerun()
+                _rerun_fragment_or_app()
             except ValueError as exc:
                 st.session_state[EVENTS_DELETE_CANDIDATE_IDS_KEY] = []
                 st.error(str(exc))
@@ -203,7 +208,7 @@ def _render_events_table(df: pd.DataFrame) -> None:
             use_container_width=True,
         ):
             st.session_state[EVENTS_DELETE_CANDIDATE_IDS_KEY] = []
-            st.rerun()
+            _rerun_fragment_or_app()
 
 
 def render_events_page() -> None:

@@ -21,7 +21,6 @@ from src.matches import (
     replace_match,
 )
 from src.models import Match
-from src.ratings import recompute_ratings
 from src.reference_data import WIN_TYPE_OPTIONS
 from src.scoring import calculate_match_points, validate_weight_difference
 from src.table_component import render_table_component
@@ -55,6 +54,13 @@ MATCH_WIN_TYPE_KEY = "match_win_type"
 MATCH_NOTES_KEY = "match_notes"
 MATCH_TOKEN_ENABLED_KEY = "match_token_enabled"
 MATCH_TOKEN_USED_BY_KEY = "match_token_used_by"
+
+
+def _rerun_fragment_or_app() -> None:
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
 
 
 def calculate_age(birth_date: date, reference_date: date) -> int:
@@ -599,8 +605,6 @@ def _render_match_form(
             )
             action_label = "corretto"
 
-        recompute_ratings()
-
         st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = None
         st.session_state[MATCH_DELETE_CANDIDATE_IDS_KEY] = []
         st.session_state[MATCH_IGNORE_TABLE_SYNC_KEY] = True
@@ -619,7 +623,7 @@ def _render_match_form(
                 f"B(base={preview['result_base_b']}, bonus={preview['performance_bonus_b']})."
             ),
         )
-        st.rerun()
+        _rerun_fragment_or_app()
     except ValueError as exc:
         st.error(str(exc))
 
@@ -653,7 +657,7 @@ def _render_manage_section(
 
             if st.button(delete_label, use_container_width=True):
                 st.session_state[MATCH_DELETE_CANDIDATE_IDS_KEY] = selected_match_ids
-                st.rerun()
+                _rerun_fragment_or_app()
 
     pending_delete_ids = st.session_state.get(MATCH_DELETE_CANDIDATE_IDS_KEY, [])
 
@@ -691,8 +695,6 @@ def _render_manage_section(
 
                         delete_matches(pending_delete_ids)
 
-                        recompute_ratings()
-
                         if editing_match_id in pending_delete_ids:
                             schedule_match_form_reset()
 
@@ -714,7 +716,7 @@ def _render_manage_section(
                                 f"{len(pending_delete_ids)} incontri eliminati correttamente.",
                             )
 
-                        st.rerun()
+                        _rerun_fragment_or_app()
                     except ValueError as exc:
                         st.error(str(exc))
 
@@ -722,7 +724,7 @@ def _render_manage_section(
                 if st.button("Annulla eliminazione", use_container_width=True):
                     st.session_state[MATCH_DELETE_CANDIDATE_ID_KEY] = None
                     st.session_state[MATCH_DELETE_CANDIDATE_IDS_KEY] = []
-                    st.rerun()
+                    _rerun_fragment_or_app()
 
     show_flash(MATCH_DELETE_FLASH_KEY)
 
