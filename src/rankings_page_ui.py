@@ -10,7 +10,6 @@ from src.db_runtime import bootstrap_database_from_state
 from src.events import list_events
 from src.formula_config_service import get_full_config
 from src.rankings import build_rankings, build_team_rankings, sort_ranking_rows
-from src.ratings import recompute_ratings
 from src.table_component import render_table_component
 from src.table_specs import (
     build_athlete_rankings_table_spec,
@@ -312,9 +311,6 @@ def render_rankings_panel(
     show_filters_expanded: bool = False,
     recompute_before_render: bool = False,
 ) -> None:
-    if recompute_before_render:
-        recompute_ratings()
-
     config = get_full_config()
     athlete_ranking_config: dict[str, Any] = config.get("athlete_ranking", {})
     team_ranking_config: dict[str, Any] = config.get("team_ranking", {})
@@ -383,19 +379,11 @@ def render_rankings_panel(
     if title:
         st.subheader(title)
 
-    initial_rankings = build_rankings(
-        reference_date=date.today(),
-        years=None,
-        event_ids=None,
-        ranking_method=effective_athlete_method,
-        min_matches_for_average=min_matches_for_average,
-    )
-
-    if not initial_rankings:
+    events = list_events()
+    if not events:
         st.info("Non ci sono ancora dati sufficienti per mostrare la classifica.")
         return
 
-    events = list_events()
     events_map = {event.id: event for event in events}
     available_years = sorted({event.event_date.year for event in events})
 
@@ -858,5 +846,5 @@ def render_rankings_page() -> None:
         state_prefix="rankings_page",
         title="Classifica atleti",
         show_filters_expanded=False,
-        recompute_before_render=True,
+        recompute_before_render=False,
     )

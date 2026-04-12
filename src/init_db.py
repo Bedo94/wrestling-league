@@ -1,9 +1,13 @@
+from threading import Lock
+
 import src.models  # noqa: F401
 from sqlalchemy import inspect, text
 
 from src.database import Base, get_engine
 
 POSTGRES_SYNC_TRIGGER_LOCK_ID = 937451
+_INITIALIZED_DATABASE_URLS: set[str] = set()
+_INITIALIZATION_LOCK = Lock()
 
 
 def _get_column_names(table_name: str) -> set[str]:
@@ -73,15 +77,23 @@ def _ensure_postgres_sync_metadata_triggers(engine) -> None:
         for table_name in ("athletes", "events", "matches"):
             trigger_name = f"wl_{table_name}_sync_metadata_defaults"
             connection.execute(
-                text(f"DROP TRIGGER IF EXISTS {trigger_name} ON {table_name}")
-            )
-            connection.execute(
                 text(
                     f"""
-                    CREATE TRIGGER {trigger_name}
-                    BEFORE UPDATE ON {table_name}
-                    FOR EACH ROW
-                    EXECUTE FUNCTION wl_apply_sync_metadata_defaults()
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM pg_trigger
+                            WHERE tgname = '{trigger_name}'
+                              AND tgrelid = '{table_name}'::regclass
+                        ) THEN
+                            CREATE TRIGGER {trigger_name}
+                            BEFORE UPDATE ON {table_name}
+                            FOR EACH ROW
+                            EXECUTE FUNCTION wl_apply_sync_metadata_defaults();
+                        END IF;
+                    END
+                    $$;
                     """
                 )
             )
@@ -130,3 +142,18 @@ def init_db() -> None:
     _drop_legacy_athlete_rating_seed_level()
     _drop_legacy_match_token_cost()
     ensure_engine_sync_metadata_triggers(engine)
+
+
+def ensure_initialized_database() -> None:
+    engine = get_engine()
+    database_url = engine.url.render_as_string(hide_password=False)
+
+    if database_url in _INITIALIZED_DATABASE_URLS:
+        return
+
+    with _INITIALIZATION_LOCK:
+        if database_url in _INITIALIZED_DATABASE_URLS:
+            return
+
+        init_db()
+        _INITIALIZED_DATABASE_URLS.add(database_url)

@@ -4,7 +4,6 @@ import streamlit as st
 
 from src.db_runtime import (
     DB_MODE_POSTGRES,
-    bootstrap_database_from_state,
     get_active_database_info,
 )
 
@@ -14,7 +13,6 @@ st.set_page_config(
     layout="wide",
 )
 
-bootstrap_database_from_state()
 active_db = get_active_database_info()
 
 st.title("Wrestling League Manager")

@@ -244,6 +244,28 @@ def _build_rating_map_from_rows(
     }
 
 
+def build_current_rating_map_from_loaded(
+    *,
+    athletes: list[Athlete],
+    matches: list[Match],
+    events_by_id: Mapping[int, Event],
+    match_points_by_id: Mapping[int, dict[str, float]],
+) -> dict[int, float]:
+    rows = sorted(
+        [
+        (match, event.event_date)
+        for match in matches
+        if (event := events_by_id.get(match.event_id)) is not None
+        ],
+        key=lambda row: (row[1], row[0].id),
+    )
+    return _build_rating_map_from_rows(
+        athletes,
+        rows,
+        match_points_by_id=match_points_by_id,
+    )
+
+
 def build_current_rating_map() -> dict[int, float]:
     """
     Calcola i rating correnti a partire dai match registrati senza scrivere nel DB.

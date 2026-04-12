@@ -14,7 +14,7 @@ from src.database import (
     normalize_sqlite_path,
 )
 from src.formula_config_service import load_config
-from src.init_db import init_db
+from src.init_db import ensure_initialized_database
 
 DB_MODE_SQLITE = "sqlite"
 DB_MODE_POSTGRES = "postgresql"
@@ -543,7 +543,7 @@ def _apply_database(
         resolved_path = normalize_sqlite_path(clean_path or fallback_path)
 
         configure_database(sqlite_path=resolved_path)
-        init_db()
+        ensure_initialized_database()
 
         try:
             load_config(environment_name=environment_name)
@@ -574,7 +574,7 @@ def _apply_database(
             raise ValueError("Inserisci una DATABASE_URL valida per PostgreSQL.")
 
         configure_database(database_url=clean_url)
-        init_db()
+        ensure_initialized_database()
 
         try:
             load_config(environment_name=environment_name)

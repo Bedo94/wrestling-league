@@ -4,8 +4,8 @@ from typing import Any
 from src.athletes import list_athletes
 from src.events import list_events
 from src.levels import get_level_label
-from src.matches import build_match_points_map, list_matches
-from src.ratings import build_current_rating_map
+from src.matches import build_match_points_map_from_loaded, list_matches
+from src.ratings import build_current_rating_map_from_loaded
 from src.settings import ATHLETE_RANKING_SETTINGS, TEAM_RANKING_SETTINGS
 
 
@@ -74,14 +74,25 @@ def build_rankings(
 
     athletes = list_athletes(include_inactive=True)
     matches = list_matches()
-    match_points_by_id = build_match_points_map()
-    rating_by_athlete_id = build_current_rating_map()
+    events = list_events()
+    events_map = {event.id: event for event in events}
+    athletes_map = {athlete.id: athlete for athlete in athletes}
+    match_points_by_id = build_match_points_map_from_loaded(
+        matches=matches,
+        events_by_id=events_map,
+        athletes_by_id=athletes_map,
+    )
+    rating_by_athlete_id = build_current_rating_map_from_loaded(
+        athletes=athletes,
+        matches=matches,
+        events_by_id=events_map,
+        match_points_by_id=match_points_by_id,
+    )
 
     selected_years = set(years) if years else None
     selected_event_ids = set(event_ids) if event_ids else None
 
     if selected_years or selected_event_ids:
-        events_map = {event.id: event for event in list_events()}
         filtered_matches = []
 
         for match in matches:

@@ -341,6 +341,36 @@ def _fallback_derived_match_points(match: Match) -> DerivedMatchPoints:
     }
 
 
+def build_match_points_map_from_loaded(
+    *,
+    matches: list[Match],
+    events_by_id: dict[int, Event],
+    athletes_by_id: dict[int, Athlete],
+) -> dict[int, DerivedMatchPoints]:
+    points_by_match_id: dict[int, DerivedMatchPoints] = {}
+
+    for match in matches:
+        event = events_by_id.get(match.event_id)
+        athlete_a = athletes_by_id.get(match.athlete_a_id)
+        athlete_b = athletes_by_id.get(match.athlete_b_id)
+
+        if event is None or athlete_a is None or athlete_b is None:
+            points_by_match_id[match.id] = _fallback_derived_match_points(match)
+            continue
+
+        try:
+            points_by_match_id[match.id] = derive_match_points(
+                match=match,
+                event=event,
+                athlete_a=athlete_a,
+                athlete_b=athlete_b,
+            )
+        except ValueError:
+            points_by_match_id[match.id] = _fallback_derived_match_points(match)
+
+    return points_by_match_id
+
+
 def build_match_points_map() -> dict[int, DerivedMatchPoints]:
     """
     Calcola i punti classifica dei match senza scrivere nel DB.
@@ -351,28 +381,14 @@ def build_match_points_map() -> dict[int, DerivedMatchPoints]:
     session = get_session()
     try:
         matches = list(session.scalars(select(Match).order_by(Match.id.asc())).all())
-        points_by_match_id: dict[int, DerivedMatchPoints] = {}
+        events = list(session.scalars(select(Event)).all())
+        athletes = list(session.scalars(select(Athlete)).all())
 
-        for match in matches:
-            event = session.get(Event, match.event_id)
-            athlete_a = session.get(Athlete, match.athlete_a_id)
-            athlete_b = session.get(Athlete, match.athlete_b_id)
-
-            if event is None or athlete_a is None or athlete_b is None:
-                points_by_match_id[match.id] = _fallback_derived_match_points(match)
-                continue
-
-            try:
-                points_by_match_id[match.id] = derive_match_points(
-                    match=match,
-                    event=event,
-                    athlete_a=athlete_a,
-                    athlete_b=athlete_b,
-                )
-            except ValueError:
-                points_by_match_id[match.id] = _fallback_derived_match_points(match)
-
-        return points_by_match_id
+        return build_match_points_map_from_loaded(
+            matches=matches,
+            events_by_id={event.id: event for event in events},
+            athletes_by_id={athlete.id: athlete for athlete in athletes},
+        )
     finally:
         session.close()
 
